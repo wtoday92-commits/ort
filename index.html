@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ORT</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #070603; overflow: hidden; }
+  /* курсор рисует сама игра: системная стрелка — человеческий знак */
+  #v { display: block; width: 100vw; height: 100vh; cursor: none; touch-action: none; }
+  /* развёртка, виньетка, бочка, аберрация и помехи живут в шейдере
+     постпрохода: наложенные поверх средствами CSS, они не гнулись бы
+     вместе с полем и выдавали бы себя */
+</style>
+</head>
+<body>
+<canvas id="v"></canvas>
+<script>
+  /* Скрипты грузятся с меткой загрузки. Без неё браузер держал старые версии
+     из кеша: правки лежали на диске, а в игре продолжал работать прежний код,
+     и исправленное выглядело неисправленным. Порядок сохраняется. */
+  (function () {
+    var stamp = Date.now().toString(36);
+    ['src/glyphs.js', 'src/post.js', 'src/audio.js', 'src/field.js', 'src/sort.js', 'src/purge.js', 'src/hand.js', 'src/creature.js', 'src/lore-text.js', 'src/lore.js', 'src/save.js', 'src/inventory.js', 'src/main.js'].forEach(function (src) {
+      var el = document.createElement('script');
+      el.src = src + '?v=' + stamp;
+      el.async = false;
+      document.body.appendChild(el);
+    });
+  })();
+</script>
+</body>
+</html>
