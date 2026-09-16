@@ -1951,11 +1951,37 @@
 
   // --- журнал ------------------------------------------------------------------
 
+  /* Журнал рисуется один раз в отдельный холст и перерисовывается, только
+     когда что-то в нём меняется. Раньше весь текст всех записей рисовался
+     заново каждый кадр, и на нескольких записях игра начинала тормозить. */
+  var jCanvas = null, jKey = '';
   function drawJournal(ctx, t) {
     if (journal.k < 0.01) return;
-    var v = env.view();
+    var v = env.view(), dpr = Math.min(2, root.devicePixelRatio || 1);
+    var selBl = journal.sel ? blockById(journal.sel) : null;
+    var key = [v.w, v.h, dpr, Math.round(journal.scroll), journal.sel, ship.length, creatureNo, ejectedNo,
+      blocks.filter(function (b) { return b.stage >= 5 && b.inJ; }).map(function (b) { return b.id; }).join(','),
+      selBl ? haveGlyph(selBl.pin) : ''].join('|');
+    if (!jCanvas) jCanvas = document.createElement('canvas');
+    if (key !== jKey) {
+      jKey = key;
+      jCanvas.width = Math.round(v.w * dpr);
+      jCanvas.height = Math.round(v.h * dpr);
+      var jc = jCanvas.getContext('2d');
+      jc.setTransform(dpr, 0, 0, dpr, 0, 0);
+      renderJournal(jc, t, v);
+    }
     ctx.save();
     ctx.globalAlpha = journal.k;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.shadowBlur = 0;
+    ctx.drawImage(jCanvas, 0, 0, v.w, v.h);
+    ctx.restore();
+  }
+
+  function renderJournal(ctx, t, v) {
+    ctx.save();
+    ctx.globalAlpha = 1;
     ctx.fillStyle = 'rgba(7,6,3,0.92)';
     ctx.fillRect(0, 0, v.w, v.h);
     ctx.beginPath(); ctx.rect(0, 84, v.w, v.h - 84); ctx.clip();
@@ -1968,7 +1994,7 @@
       if (bl.stage < 5 || !bl.inJ) return;
       any = true;
       var top = y - 20, sel = journal.sel === bl.id;
-      ctx.globalAlpha = journal.k * (journal.sel && !sel ? 0.3 : 1);
+      ctx.globalAlpha = journal.sel && !sel ? 0.3 : 1;
       bl.def.sentences.forEach(function (d) {
         var x = x0 + 20;
         d.text.forEach(function (tok) {
@@ -2008,7 +2034,7 @@
       }
       y += 26;
     });
-    ctx.globalAlpha = journal.k;
+    ctx.globalAlpha = 1;
     // события корабля записаны словами, которых ещё никто не прочёл
     for (var i = ship.length - 1; i >= 0 && i >= ship.length - 12; i--) {
       var x = x0 + 20;
@@ -2166,6 +2192,8 @@
       return { x0: r.x0 - p, y0: r.y0 - p, x1: r.x1 + p, y1: r.y1 + p };
     },
     get journalOpen() { return journal.open; },
+    // журнал раскрыт полностью и закрывает поле целиком
+    journalCover: function () { return journal.k > 0.98; },
     get fresh() { return journal.fresh; },
     get dirty() { return dirty; },
     clean: function () { dirty = false; },

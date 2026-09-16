@@ -2763,7 +2763,9 @@
     if (shake > 0) ctx.translate((Math.random() - 0.5) * shake * 22, (Math.random() - 0.5) * shake * 14);
     ctx.fillStyle = '#070603';
     ctx.fillRect(0, 0, vw, vh);
-    F.draw(ctx, vw, vh, (panel === 1 && (INV.open || LORE.journalOpen)) ? null : Pointer);
+    // под раскрытым журналом поля не видно: тысячи знаков не рисуются впустую
+    var covered = panel === 1 && LORE.journalCover();
+    if (!covered) F.draw(ctx, vw, vh, (panel === 1 && (INV.open || LORE.journalOpen)) ? null : Pointer);
     if (panel === 0) { drawRect(); drawThreads(); }
     drawPulses();
     if (panel === 0) drawReveals();
@@ -2775,7 +2777,7 @@
       if (phase === PHASE.PURGE) PG.draw(ctx, t);
       drawConsole();
       drawSpinDrag();
-    } else LORE.draw(ctx, t);
+    } else if (!covered) LORE.draw(ctx, t);
     // пока картинка уходит вдаль, интерфейса нет: поле размножается во все стороны
     var uiOn = ejectFx.scale > 0.995;
     if (uiOn) {
