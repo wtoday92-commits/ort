@@ -358,10 +358,23 @@
     });
     var cands = base.slice(0, 1).concat(blocks.filter(function (b) { return b.inst && fitsSlot(b); }));
     if (!cands.length) { S.nothing(); flare[slot] = 0.5; return; }
+    // предлагаются только те записи, которые сейчас можно начать
+    var ready = cands.filter(function (b) { return canStart(slot, b); });
+    if (!ready.length) { reject(); flare[slot] = 1; return; }
     S.phase(slot);
-    if (cands.length === 1) { startSlot(slot, cands[0]); return; }
-    ses = { choose: cands, slot: slot, stage: -1, bl: null };
+    if (ready.length === 1) { startSlot(slot, ready[0]); return; }
+    ses = { choose: ready, slot: slot, stage: -1, bl: null };
     btnReset();
+  }
+
+  function canStart(slot, bl) {
+    if (slot === 0) return bl.stage === 1 || errs + file[0] >= 1;
+    if (slot === 1) {
+      if (!bl.targets) return file[1] >= 1;
+      var rem = bl.targets.filter(function (k) { return !bl.restored[k]; }).length;
+      return !rem || file[1] >= rem;
+    }
+    return file[slot] >= 1;
   }
 
   function startSlot(slot, bl) {
@@ -407,7 +420,10 @@
   /* --- 1а. Угловые знаки и рамка --------------------------------------------- */
 
   function startCorners(bl) {
-    if (errs < 1) { reject(); flare[0] = 1; return; }
+    /* Рамку можно начать, пока в первой папке хоть что-то есть: серые точки
+       или заряд, оставшийся от прежних рамок. Папка показывает их вместе, и
+       раньше заряд без точек выглядел доступным, но рамка не начиналась. */
+    if (errs + file[0] < 1) { reject(); flare[0] = 1; return; }
     focus(bl, 1.5);
     ses = { stage: 0, bl: bl, hit: [0, 0, 0, 0], forming: -1 };
     btnReset();
