@@ -3006,7 +3006,7 @@
     if (saved && saved.life) { age = +saved.life.age || 0; tut = saved.life.tut || null; }
     else if ((!saved && INTRO_FULL) || /[?&]tut\b/.test(location.search)) tut = { play: 0, cycles: 0, t3: 0, anaErr: false };
     if (saved && saved.nav) {
-      try { F.loadWorld(F.worldFromJSON(saved.nav)); }
+      try { F.loadWorld(F.worldFromJSON(saved.nav)); F.pruneObjects(); }
       catch (e) { F.loadWorld(F.freshWorld({ w: NAV_W, h: NAV_W, seed: 0x5f3a71, zoom: 1 })); }
     }
     /* Полная заставка — только при самом первом запуске. Если сохранение уже

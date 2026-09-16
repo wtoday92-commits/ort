@@ -299,6 +299,7 @@
   // уникальные объекты: id -> объект; клетка -> id; клетка якоря -> запись якоря; прокатанные участки
   var objs = new Map(), objCell = new Map(), objAnch = new Map(), objGen = new Set();
   var objHome = null, objSeq = 1, objSpawn = true, objPicker = null, objT = 0;
+  var objBudget = 0;                // сколько случайных находок ещё ляжет на эту карту
   var OBJ_PID = 900000, CH_W = 26, CH_H = 15;
   var selBoard = false;            // рамка — это доска сортировки: знаки у кромки не отжимать
   var traceFn = null;              // кому сообщать о новых особых знаках: хранилище данных
@@ -331,7 +332,8 @@
       purged: purged, shards: shards, outlines: outlines, voids: voids,
       nodes: nodes, cells: cells, consumed: consumed, behWant: behWant, behAmt: behAmt,
       shardId: shardId, sortedCells: sortedCells, beacon: beacon, spin: spin, sortedOf: sortedOf,
-      objs: objs, objCell: objCell, objAnch: objAnch, objGen: objGen, objHome: objHome, objSeq: objSeq
+      objs: objs, objCell: objCell, objAnch: objAnch, objGen: objGen, objHome: objHome, objSeq: objSeq,
+      objBudget: objBudget
     };
   }
 
@@ -349,6 +351,7 @@
     spin = o.spin || new Map(); sortedOf = o.sortedOf || new Map();
     objs = o.objs || new Map(); objCell = o.objCell || new Map(); objAnch = o.objAnch || new Map();
     objGen = o.objGen || new Set(); objHome = o.objHome || null; objSeq = o.objSeq || 1; objT = 0;
+    objBudget = o.objBudget || 0;
     marks = null; boost = null; sel = null; glide = null; streak = 0;
   }
 
@@ -363,7 +366,8 @@
       purged: new Map(), shards: new Set(), outlines: [], voids: new Map(),
       nodes: new Map(), cells: new Map(), consumed: new Set(), behWant: 1, behAmt: 1,
       shardId: new Map(), sortedCells: 0, beacon: -1, spin: new Map(), sortedOf: new Map(),
-      objs: new Map(), objCell: new Map(), objAnch: new Map(), objGen: new Set(), objHome: null, objSeq: 1
+      objs: new Map(), objCell: new Map(), objAnch: new Map(), objGen: new Set(), objHome: null, objSeq: 1,
+      objBudget: rollBudget()
     };
   }
 
@@ -379,7 +383,7 @@
       over: mp(o.over), spent: st(o.spent), glitch: st(o.glitch), purged: mp(o.purged),
       shards: st(o.shards), voids: mp(o.voids), consumed: st(o.consumed), shardId: mp(o.shardId),
       spin: mp(o.spin), sortedCells: o.sortedCells,
-      objs: Array.from(o.objs.values()), objGen: st(o.objGen), objHome: o.objHome, objSeq: o.objSeq,
+      objs: Array.from(o.objs.values()), objGen: st(o.objGen), objHome: o.objHome, objSeq: o.objSeq, objBudget: o.objBudget || 0,
       outlines: o.outlines.map(function (ol) {
         return { c: ol.list.map(function (c) { return [c.wx, c.wy]; }), inv: ol.invId || 0 };
       })
@@ -394,6 +398,7 @@
     o.consumed = new Set(j.consumed || []); o.shardId = new Map(j.shardId || []); o.spin = new Map(j.spin || []);
     o.sortedCells = j.sortedCells || 0;
     o.objGen = new Set(j.objGen || []); o.objHome = j.objHome || null; o.objSeq = j.objSeq || 1;
+    o.objBudget = j.objBudget || 0;
     (j.objs || []).forEach(function (ob) { registerObj(o, ob); });
     (j.outlines || []).forEach(function (s) {
       var list = s.c.map(function (p) { return { wx: p[0], wy: p[1] }; }), set = {};
@@ -469,6 +474,22 @@
     return ob;
   }
 
+  /* Объект убран с карты совсем: клетки и якоря снова обычные знаки поля. */
+  function dropObject(id) {
+    var ob = objs.get(id);
+    if (!ob) return;
+    objs.delete(id);
+    ob.cells.forEach(function (c) { var k = ckey(c[0], c[1]); objCell.delete(k); over.delete(k); });
+    [ob.a, ob.b].forEach(function (p) { var k = ckey(p[0], p[1]); objAnch.delete(k); over.delete(k); });
+  }
+
+  /* Случайных находок на всю карту: чаще одна, нередко ни одной, изредка две.
+     Капсулы и станция по сценарию сюда не входят. */
+  function rollBudget() {
+    var r = Math.random();
+    return r < 0.4 ? 0 : r < 0.95 ? 1 : 2;
+  }
+
   function objAt(wx, wy) {
     var k = ckey(wx, wy), id = objCell.get(k);
     if (id !== undefined) return id;
@@ -476,10 +497,10 @@
     return oa && !consumed.has(oa.pid) ? oa.obj : 0;
   }
 
-  /* Объекты появляются по участкам размером примерно в экран, заранее, пока
-     участок ещё за краем. Стартовый участок и соседние пусты: на первых
-     экранах игрок занят журналом. Дальше на участке чаще всего один объект,
-     иногда ни одного и совсем редко два. */
+  /* Случайные находки — редкость: на всю карту их objBudget (0–2). Каждая
+     ложится на случайный ещё не открытый участок размером примерно в экран,
+     заранее, пока участок за краем. Стартовый участок и соседние пусты: на
+     первых экранах игрок занят журналом. */
   function stepObjects(dt, vw, vh) {
     objT -= dt;
     if (objT > 0) return;
@@ -498,14 +519,12 @@
         var dx = Math.abs(cx - objHome.x), dy = Math.abs(cy - objHome.y);
         dx = Math.min(dx, KX - dx); dy = Math.min(dy, KY - dy);
         if (Math.max(dx, dy) < 2) continue;
-        var r = Math.random(), n = r < 0.3 ? 0 : r < 0.97 ? 1 : 2;
-        for (var i = 0; i < n; i++) {
-          var o = objPicker();
-          if (!o) break;
-          o.x = cx * CH_W + 3 + Math.random() * (CH_W - 6);
-          o.y = cy * CH_H + 3 + Math.random() * (CH_H - 6);
-          placeObject(o);
-        }
+        if (objBudget <= 0 || Math.random() > 0.08) continue;
+        var o = objPicker();
+        if (!o) continue;
+        o.x = cx * CH_W + 3 + Math.random() * (CH_W - 6);
+        o.y = cy * CH_H + 3 + Math.random() * (CH_H - 6);
+        if (placeObject(o)) objBudget--;
       }
     }
   }
@@ -1181,6 +1200,14 @@
     setObjSpawn: function (on) { objSpawn = !!on; },
     setObjPicker: function (fn) { objPicker = fn; },
     objects: function () { return Array.from(objs.values()); },
+    /* Лишние случайные находки убираются (старые сохранения набирали их
+       десятками): остаётся не больше двух. Капсулы и станция остаются. */
+    pruneObjects: function () {
+      var list = [];
+      objs.forEach(function (o) { if (o.type !== 'capsule' && o.type !== 'station_strange') list.push(o.id); });
+      for (var i = list.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var q = list[i]; list[i] = list[j]; list[j] = q; }
+      while (list.length > 2) dropObject(list.pop());
+    },
     fill: fill, voidNear: voidNear, voidsOnScreen: voidsOnScreen, cellNear: cellNear,
     isVoidCell: isVoidCell,
     isSorted: function (wx, wy) { return sortedOf.has(ckey(wx, wy)); },
