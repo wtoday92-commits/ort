@@ -4,8 +4,11 @@
  * из них игрок узнаёт, где он и что происходит. Позже появятся записи
  * других цветов, но сейчас только белые.
  *
- * Запись открывается четырьмя этапами. У каждого этапа своя папка, и каждый
- * этап кормит папку следующего:
+ * Серые точки с навигации копятся шкалой под папками. Первая папка — выбор
+ * записи: запись забирает из шкалы свою цену, и проступает рамка. Первая
+ * фигура в рамке закрепляет запись; до её прочтения остальные ждут. Дальше
+ * каждый этап тратит ячейки своей папки и кладёт в следующую (см. раздел 76
+ * проектного документа). Ниже — исходное описание этапов:
  *
  *   1. РАМКА. Четыре угловых знака пульсируют белым. Нажав все четыре, игрок
  *      вызывает рамку, и в неё уходят все накопленные стаки ошибок: они
@@ -49,8 +52,13 @@
   var sector = 14, ejectSector = 14;      // текущий сектор; сектор, где выброшена последняя капсула
   var objInst = [], objRead = {}, objLost = {}, objFlags = {}, objUid = 1;
   var ejects = 0, ejectedNo = 0;          // сколько существ уже выброшено и номер последнего
+  /* Серые точки с навигации копятся шкалой под папками (не больше ERR_CAP).
+     Выбранная запись забирает из шкалы свою цену в первую папку. */
+  var layout = {};                       // место каждой появившейся записи: id -> {x, y, w, h}
+  var ERR_CAP = 12, COST = { white: 3, blue: 4, green: 5 }, lackAt = -99;
+  var stats = { errors: 0, denied: 0, loreTime: 0, objects: 0 };
   var blocks = [], ship = [];
-  var journal = { open: false, scroll: 0, fresh: 0, k: 0, max: 0 };
+  var journal = { open: false, scroll: 0, fresh: 0, k: 0, max: 0, sel: null, hits: [] };
   var marks = new Map();
   var ses = null;                         // этап, который сейчас идёт
   var btn = { x: 0, y: 0, r: 21, hot: 0, live: false };
@@ -123,6 +131,9 @@
       bl.stage = sv.stage | 0; bl.cells = sv.cells || null; bl.tiles = sv.tiles || [];
       bl.targets = sv.targets || null; bl.restored = sv.restored || {}; bl.dots = sv.dots || []; bl.num = sv.num || 0; bl.ejn = sv.ejn || 0; bl.words = sv.words || null;
       bl.sec = sv.sec || bl.sec;
+      bl.draft = sv.draft || null; bl.pin = sv.pin || 0;
+      // прочитанные раньше записи уже лежали в журнале
+      bl.inJ = sv.inJ === undefined ? bl.stage >= 5 : !!sv.inJ;
     }
     if (!bl.cells || bl.cells.length !== bl.n) {
       bl.cells = [];
@@ -134,7 +145,11 @@
   }
 
   function buildBlocks() {
-    T.logs.forEach(function (d, i) { makeBlock(d, i); });
+    // на поле сразу ложатся только записи, которые уже начаты или прочитаны
+    T.logs.forEach(function (d, i) {
+      var sv = saved && saved[d.id];
+      if ((sv && (sv.stage | 0) > 0) || layout[d.id]) materializeBase(i);
+    });
   }
 
   /* --- записи найденных объектов ------------------------------------------- */
@@ -143,23 +158,76 @@
      синие медленно проступают и гаснут (природное). Открывается запись теми же
      этапами. Не дочитанная до следующей смены существа — теряется: природная
      возвращается в пул и может встретиться снова, рукотворная — навсегда. */
-  var OBJ_COLS = [-18, 10, -30, 22, -42, 34];
-
-  function objSlotAt(slot) {
-    var n = OBJ_COLS.length;
-    return [OBJ_COLS[slot % n], -2 + Math.floor(slot / n) * 5];
+  /* Раскладка записей: немного хаотично, но близко — от двух до четырёх
+     клеток между соседними, со сдвигом вверх-вниз. Журнал корабля всегда
+     ложится одинаково; находки подстраиваются под всё, что уже лежит. */
+  function rng32(a) {
+    return function () {
+      a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
   }
+
+  function placeRect(rects, w, h, rng) {
+    if (!rects.length) return { x: -Math.floor(w / 2), y: -2, w: w, h: h };
+    for (var a = 0; a < 600; a++) {
+      var ref = rects[Math.floor(rng() * rects.length)], side = Math.floor(rng() * 4), gap = 2 + Math.floor(rng() * 3), x, y;
+      if (side === 0) { x = ref.x + ref.w + gap; y = ref.y + Math.round((rng() - 0.5) * 4); }
+      else if (side === 1) { x = ref.x - gap - w; y = ref.y + Math.round((rng() - 0.5) * 4); }
+      else if (side === 2) { y = ref.y + ref.h + gap; x = ref.x + Math.round((rng() - 0.5) * 6); }
+      else { y = ref.y - gap - h; x = ref.x + Math.round((rng() - 0.5) * 6); }
+      if (Math.abs(x + w / 2) > 48 || Math.abs(y + h / 2) > 48) continue;
+      var ok = rects.every(function (e) {
+        return x >= e.x + e.w + 2 || x + w + 2 <= e.x || y >= e.y + e.h + 2 || y + h + 2 <= e.y;
+      });
+      if (ok) return { x: x, y: y, w: w, h: h };
+    }
+    return { x: -50, y: -50 + rects.length * 5, w: w, h: h };
+  }
+
+  /* Место записи выбирается, когда она появляется, рядом с уже лежащими.
+     Записи, которые ещё не открылись, места не занимают — иначе видимые
+     разъезжались бы вокруг пустых мест. */
+  function placeFor(id, w, h) {
+    if (!layout[id]) {
+      layout[id] = placeRect(Object.keys(layout).map(function (k) { return layout[k]; }), w, h, Math.random);
+      dirty = true;
+    }
+    return layout[id];
+  }
+
+  function blockById(id) {
+    for (var i = 0; i < blocks.length; i++) if (blocks[i].id === id) return blocks[i];
+    return null;
+  }
+
+  function materializeBase(i) {
+    var d = T.logs[i], b = blockById(d.id);
+    if (b) return b;
+    var r = placeFor(d.id, d.w, d.h);
+    return makeBlock(Object.assign({}, d, { at: [r.x, r.y] }), i);
+  }
+
+  // формы записей находок: разные, а площадь почти одна
+  var OBJ_SIZES = [[8, 3], [6, 4], [5, 5], [4, 6], [7, 3], [5, 4], [3, 7]];
 
   function objDef(inst) {
     var od = T.objects[inst.type], tx = od.texts[0];
     od.texts.forEach(function (x) { if (x.id === inst.text) tx = x; });
-    return { id: 'obj:' + inst.uid, color: od.cls === 'art' ? 'green' : 'blue', at: objSlotAt(inst.slot),
-             w: 8, h: 3, sentences: tx.sentences, extra: [] };
+    return { id: 'obj:' + inst.uid, color: od.cls === 'art' ? 'green' : 'blue',
+             at: inst.at || [-18 + (inst.slot % 2) * 28, -2 + inst.slot * 3],
+             w: inst.w || 8, h: inst.h || 3, sentences: tx.sentences, extra: [] };
   }
 
   function syncObjBlocks() {
     objInst.forEach(function (inst) {
       if (blocks.some(function (b) { return b.inst === inst; })) return;
+      if (!inst.at) {
+        var pr = placeFor('obj:' + inst.uid, inst.w || 8, inst.h || 3);
+        inst.at = [pr.x, pr.y]; inst.w = pr.w; inst.h = pr.h;
+      }
       makeBlock(objDef(inst), blocks.length, { inst: inst, onum: inst.onum || 0, sec: inst.sec || 0 });
     });
   }
@@ -177,9 +245,12 @@
   function addObject(o) {
     var free = objTextFree(o.type);
     if (!free.length) return false;
-    var tx = free[Math.floor(Math.random() * free.length)], slot = 0;
-    while (objInst.some(function (i) { return i.slot === slot; })) slot++;
-    objInst.push({ uid: objUid++, type: o.type, text: tx.id, onum: o.onum || 0, sec: sector, slot: slot });
+    var tx = free[Math.floor(Math.random() * free.length)];
+    var sz = OBJ_SIZES[Math.floor(Math.random() * OBJ_SIZES.length)], uid = objUid++;
+    var pr = placeFor('obj:' + uid, sz[0], sz[1]);
+    objInst.push({ uid: uid, type: o.type, text: tx.id, onum: o.onum || 0, sec: sector,
+                   at: [pr.x, pr.y], w: sz[0], h: sz[1] });
+    stats.objects++;
     flare[0] = 1;
     dirty = true;
     if (built && env && env.active()) syncObjBlocks();
@@ -196,10 +267,12 @@
     objInst = objInst.filter(function (inst) {
       var bl = blockOf(inst), sv = saved && saved['obj:' + inst.uid];
       var st = bl ? bl.stage : (sv ? sv.stage | 0 : 0);
-      if (st >= 5) return true;
+      // начатая (укладка с фигурами и дальше) запись уже не пропадёт
+      if (st >= 5 || (bl && isCommitted(bl))) return true;
       var od = T.objects[inst.type];
       if (od && od.cls === 'art' && !od.repeat) objLost[inst.text] = 1;
       if (bl) blocks.splice(blocks.indexOf(bl), 1);
+      delete layout['obj:' + inst.uid];
       return false;
     });
   }
@@ -213,7 +286,9 @@
   }
 
   function objColor(bl, a) {
-    return (bl.def.color === 'green' ? 'rgba(120,255,170,' : 'rgba(130,185,255,') + a + ')';
+    if (bl.def.color === 'green') return 'rgba(120,255,170,' + a + ')';
+    if (bl.def.color === 'blue') return 'rgba(130,185,255,' + a + ')';
+    return 'rgba(240,244,255,' + a + ')';
   }
 
   /* Предложения: знаки от начала до первой белой точки, между точками и от
@@ -336,49 +411,98 @@
 
   function slotOf(stage) { return stage <= 1 ? 0 : Math.min(3, stage - 1); }
 
+  /* Лорная работа идёт над одной записью за раз.
+     Первая папка — выбор: подсвечиваются доступные записи (очередная из
+     журнала корабля и все заготовки находок). Нажатие по записи забирает из
+     шкалы её цену (белая — 3 точки, синяя — 4, зелёная — 5) в первую папку, и
+     проступает рамка. Пока в рамке нет ни одной фигуры, выбор можно отменить:
+     точки вернутся в шкалу. Первая же фигура закрепляет запись — дальше
+     остальные записи ждут, пока эта не будет прочитана, а сама она уже не
+     пропадёт. Каждый этап тратит ячейки своей папки и кладёт в следующую. */
   function folderClick(slot) {
     var cur = ses ? (ses.choose ? ses.slot : slotOf(ses.stage)) : -1;
     if (ses) { abandon(); if (cur === slot) { S.consoleOff(); return; } }
-    /* Какую запись брать. Из журнала корабля — одну: начатая идёт первой, из
-       не начатых — та, у которой приоритет выше; записи, которым нужны выбросы,
-       до них не существуют. Записи найденных объектов предлагаются все. Если
-       вариантов больше одного, игрок выбирает сам: записи подсвечиваются, и
-       нажатие по одной из них начинает этап. */
-    function fitsSlot(b) { return slot === 0 ? (b.stage === 0 || b.stage === 1) : b.stage === slot + 1; }
-    var base = blocks.filter(function (b) {
-      if (b.inst) return false;
-      var need = b.def.minEjects || (b.def.requires === 'eject' ? 1 : 0);
-      if (ejects < need && b.stage === 0) return false;
-      return fitsSlot(b);
-    });
-    base.sort(function (a, b) {
-      var sa = a.stage === 1 ? 0 : 1, sb = b.stage === 1 ? 0 : 1;
-      if (sa !== sb) return sa - sb;
-      return (b.def.priority || 0) - (a.def.priority || 0);
-    });
-    var cands = base.slice(0, 1).concat(blocks.filter(function (b) { return b.inst && fitsSlot(b); }));
-    if (!cands.length) { S.nothing(); flare[slot] = 0.5; return; }
-    // предлагаются только те записи, которые сейчас можно начать
-    var ready = cands.filter(function (b) { return canStart(slot, b); });
-    if (!ready.length) { reject(); flare[slot] = 1; return; }
-    S.phase(slot);
-    if (ready.length === 1) { startSlot(slot, ready[0]); return; }
-    ses = { choose: ready, slot: slot, stage: -1, bl: null };
+    var work = current();
+    if (work) {
+      if (slotOf(work.stage) !== slot) { reject(); flare[slotOf(work.stage)] = 1; return; }
+      S.phase(slot);
+      startSlot(slot, work);
+      return;
+    }
+    if (slot !== 0) { S.nothing(); flare[slot] = 0.5; return; }
+    var cands = seeds();
+    if (!cands.length) { S.nothing(); flare[0] = 0.5; return; }
+    S.phase(0);
+    ses = { choose: cands, slot: 0, stage: -1, bl: null };
     btnReset();
   }
 
-  function canStart(slot, bl) {
-    if (slot === 0) return bl.stage === 1 || errs + file[0] >= 1;
-    if (slot === 1) {
-      if (!bl.targets) return file[1] >= 1;
-      var rem = bl.targets.filter(function (k) { return !bl.restored[k]; }).length;
-      return !rem || file[1] >= rem;
+  function baseEligible(d) {
+    var need = d.minEjects || (d.requires === 'eject' ? 1 : 0);
+    if (ejects < need) return false;
+    if (d.minLives && lives < d.minLives) return false;
+    if (d.when) for (var k in d.when) if ((stats[k] || 0) < d.when[k]) return false;
+    return true;
+  }
+
+  function baseStage(i) {
+    var d = T.logs[i], b = blockById(d.id), sv = saved && saved[d.id];
+    return b ? b.stage : (sv ? sv.stage | 0 : 0);
+  }
+
+  /* Очередная запись журнала корабля: одна, по порядку; реакции вне очереди.
+     Появляясь, она занимает место рядом с уже лежащими записями. */
+  function nextBase() {
+    var best = -1, bp = 0;
+    T.logs.forEach(function (d, i) {
+      var stg = baseStage(i);
+      if (stg >= 5 || (stg === 0 && !baseEligible(d))) return;
+      var pr = d.priority || 0;
+      if (best < 0 || pr > bp) { best = i; bp = pr; }
+    });
+    if (best < 0 || !built || !env || !env.active()) return null;
+    return materializeBase(best);
+  }
+
+  function seeds() {
+    var nb = nextBase(), out = nb && nb.stage === 0 ? [nb] : [];
+    return out.concat(blocks.filter(function (b) { return b.inst && b.stage === 0; }));
+  }
+
+  function isCommitted(b) {
+    return (b.stage >= 2 && b.stage < 5) || (b.stage === 1 && !!(b.draft && b.draft.length));
+  }
+
+  function current() {
+    for (var i = 0; i < blocks.length; i++) if (isCommitted(blocks[i])) return blocks[i];
+    return null;
+  }
+
+  function costFor(bl) { return COST[bl.def.color] || 3; }
+
+  function saveDraft(s) {
+    s.bl.draft = s.placed.map(function (p) {
+      return { id: p.item.id, rot: p.rot || 0, x: p.x, y: p.y,
+               c: p.cells.map(function (q) { return [p.x + q[0], p.y + q[1]]; }) };
+    });
+    dirty = true;
+  }
+
+  /* Выбор отменён: точки из первой папки улетают обратно в шкалу. */
+  function uncommit(bl) {
+    var n = file[0], from = env.folderPos(0);
+    for (var i = 0; i < n; i++) {
+      var sp = env.scalePos(errs + i, errs + n);
+      fly(from.x, from.y - 8, sp.x, sp.y, { d: i * 0.08, col: 'grey', r: 2.6 });
     }
-    return file[slot] >= 1;
+    errs = Math.min(ERR_CAP, errs + n);
+    file[0] = 0;
+    bl.stage = 0; bl.draft = null; bl.tiles = [];
+    dirty = true;
   }
 
   function startSlot(slot, bl) {
-    if (slot === 0) { if (bl.stage === 0) startCorners(bl); else startTiling(bl); }
+    if (slot === 0) { if (bl.stage === 0) startPick(bl); else startTiling(bl); }
     else if (slot === 1) startRestore(bl);
     else if (slot === 2) startWords(bl);
     else startLines(bl);
@@ -387,9 +511,81 @@
   function pressChoose(x, y) {
     var s = ses;
     for (var i = 0; i < s.choose.length; i++) {
-      if (cellAt(s.choose[i], x, y) >= 0) { ses = null; startSlot(s.slot, s.choose[i]); return; }
+      var bl = s.choose[i];
+      if (cellAt(bl, x, y) < 0) continue;
+      var cost = costFor(bl);
+      if (errs < cost) {
+        // не хватает: точки шкалы вспыхивают — видно, сколько есть и сколько нужно
+        lackAt = now;
+        S.lack();
+        env.reject(0.4);
+        return;
+      }
+      var to = env.folderPos(0), before = errs;
+      errs -= cost;
+      file[0] = cost;
+      dirty = true;
+      for (var j = 0; j < cost; j++) {
+        var sp = env.scalePos(before - cost + j, before);
+        fly(sp.x, sp.y, to.x, to.y - 8, { d: j * 0.1, col: 'grey', r: 2.6, done: function () { flare[0] = 1; S.tick(1, 3); } });
+      }
+      ses = null;
+      startPick(bl);
+      return;
     }
     S.nothing();
+  }
+
+  /* --- кнопка журнала ------------------------------------------------------- */
+  /* У прочитанной записи в правом верхнем углу горит знак. Нажатие по нему
+     тратит такой же знак из хранилища, и запись появляется во вкладке журнала.
+     Там её можно выделить и тем же знаком отвязать обратно. */
+  function pinPos(bl) {
+    var r = rectOf(bl);
+    return { x: r.x1 + F.CELL * 0.12, y: r.y0 - F.CELL * 0.12 };
+  }
+
+  function haveGlyph(g) {
+    return INV().items().some(function (it) { return it.k !== 'shape' && it.g === g; });
+  }
+
+  function spendGlyph(g) {
+    var all = INV().items();
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].k !== 'shape' && all[i].g === g) { INV().remove(all[i]); return true; }
+    }
+    return false;
+  }
+
+  function pinToJournal(bl) {
+    if (!spendGlyph(bl.pin)) { reject(0.4); return; }
+    bl.inJ = true;
+    journal.fresh = 1;
+    dirty = true;
+    var p = pinPos(bl);
+    env.pulse(p.x, p.y, true);
+    S.bloom();
+  }
+
+  function unpin(bl) {
+    if (!spendGlyph(bl.pin)) { reject(0.4); return; }
+    bl.inJ = false;
+    journal.sel = null;
+    dirty = true;
+    S.dissolve();
+  }
+
+  function drawPin(ctx, bl) {
+    var p = pinPos(bl), s = Math.max(22, F.CELL * 0.62), ok = haveGlyph(bl.pin), pu = 0.5 + 0.5 * Math.sin(now * 2.4);
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.fillStyle = 'rgba(9,7,4,0.9)';
+    ctx.fillRect(-s / 2, -s / 2, s, s);
+    ctx.globalCompositeOperation = 'lighter';
+    glowStroke(ctx, ok ? 'rgba(255,236,200,' + (0.5 + 0.4 * pu).toFixed(3) + ')' : 'rgba(150,130,110,0.45)', ok ? 12 : 0, 1.4);
+    ctx.strokeRect(-s / 2, -s / 2, s, s);
+    G.drawGlyph(ctx, bl.pin, s * 0.7, 1.3);
+    ctx.restore();
   }
 
   /* Выход из этапа: начатое откатывается, ячейки возвращаются в папку.
@@ -397,6 +593,8 @@
   function abandon() {
     if (!ses) return;
     var s = ses;
+    // выбор без единой фигуры отменяется целиком
+    if (s.stage === 0 || (s.stage === 1 && !s.placed.length)) uncommit(s.bl);
     if (s.stage === 2) file[1] = Math.min(LCAP, file[1] + s.spent);
     if (s.stage === 3) {
       file[2] = Math.min(LCAP, file[2] + s.spent);
@@ -417,41 +615,14 @@
     if (env) env.reject(k || 0.6);
   }
 
-  /* --- 1а. Угловые знаки и рамка --------------------------------------------- */
+  /* --- 1а. Выбранная запись: проступает рамка ---------------------------------- */
 
-  function startCorners(bl) {
-    /* Рамку можно начать, пока в первой папке хоть что-то есть: серые точки
-       или заряд, оставшийся от прежних рамок. Папка показывает их вместе, и
-       раньше заряд без точек выглядел доступным, но рамка не начиналась. */
-    if (errs + file[0] < 1) { reject(); flare[0] = 1; return; }
+  function startPick(bl) {
     focus(bl, 1.5);
-    ses = { stage: 0, bl: bl, hit: [0, 0, 0, 0], forming: -1 };
+    // рамка проступает, когда точки долетят до папки
+    ses = { stage: 0, bl: bl, forming: -0.9 };
     btnReset();
-  }
-
-  function pressCorners(x, y) {
-    var s = ses;
-    if (s.forming >= 0) return;
-    var cs = corners(s.bl);
-    for (var i = 0; i < 4; i++) {
-      var p = cellXY(s.bl, cs[i]);
-      if (Math.hypot(p.x - x, p.y - y) < TOL && !s.hit[i]) {
-        s.hit[i] = 1;
-        S.keyPress(i);
-        env.pulse(p.x, p.y, true);
-        if (s.hit.every(function (h) { return h; })) formFrame();
-        return;
-      }
-    }
-    S.nothing();
-  }
-
-  /* Рамка проступает по периметру, а в неё из первой папки летят частицы —
-     все накопленные стаки ошибок. Они становятся зарядом рамки. */
-  function formFrame() {
-    var s = ses, bl = s.bl, from = env.folderPos(0), r = rectOf(bl);
-    s.forming = 0;
-    var n = errs, count = Math.min(24, n * 4);
+    var from = env.folderPos(0), r = rectOf(bl), n = file[0], count = Math.min(24, n * 4);
     var w = r.x1 - r.x0, h = r.y1 - r.y0, per = 2 * (w + h);
     for (var i = 0; i < count; i++) {
       var d = (i / count) * per, px, py;
@@ -459,20 +630,23 @@
       else if (d < w + h) { px = r.x1; py = r.y0 + d - w; }
       else if (d < 2 * w + h) { px = r.x1 - (d - w - h); py = r.y1; }
       else { px = r.x0; py = r.y1 - (d - 2 * w - h); }
-      fly(from.x + rnd(-14, 14), from.y - 8, px, py, { d: i * 0.04, dur: 0.8, col: 'grey', r: 2.4 });
+      fly(from.x + rnd(-14, 14), from.y - 8, px, py, { d: 0.9 + i * 0.04, dur: 0.8, col: 'grey', r: 2.4 });
     }
-    file[0] = Math.min(LCAP, file[0] + n);
-    errs = 0;
-    flare[0] = 1;
-    S.frameOn();
-    dirty = true;
+    setTimeout(function () { if (ses && ses.bl === bl) S.frameOn(); }, 900);
   }
 
   /* --- 1б. Мостим рамку фигурами ------------------------------------------- */
 
   function startTiling(bl) {
     focus(bl, 1.7);
-    ses = { stage: 1, bl: bl, placed: [], scroll: 0, drag: null, used: 0 };
+    // разложенные раньше фигуры возвращаются на свои места
+    var placed = [];
+    (bl.draft || []).forEach(function (d) {
+      var it = INV().byId(d.id);
+      if (!it) return;
+      placed.push({ item: it, scale: 1, rot: d.rot || 0, cells: tileCells(it, d.rot || 0), x: d.x, y: d.y, shake: 0 });
+    });
+    ses = { stage: 1, bl: bl, placed: placed, scroll: 0, drag: null, used: 0 };
     btnReset();
   }
 
@@ -529,19 +703,24 @@
     var nr = ((p.rot || 0) + 1) % 4, cells = tileCells(p.item, nr), f = fits(cells, p.x, p.y, p);
     if (!f.ok) { reject(0.4); p.shake = 0.45; return; }
     p.rot = nr; p.cells = cells;
+    if (ses) saveDraft(ses);
     S.zoom(1);
   }
 
+  /* Поле сформировано: запись закреплена навсегда. Точки первой папки
+     потрачены целиком, во вторую папку уходит ровно столько, сколько нужно
+     следующему этапу. */
   function finishTiling() {
     var s = ses, bl = s.bl, r = rectOf(bl), to = env.folderPos(1);
     bl.tiles = s.placed.map(function (p) { return { c: p.cells.map(function (q) { return [p.x + q[0], p.y + q[1]]; }) }; });
     s.placed.forEach(function (p) { INV().remove(p.item); });
-    var spentC = costOf(s.placed);
-    file[0] = Math.max(0, file[0] - spentC);
-    for (var i = 0; i < spentC; i++) {
+    var out = Math.min(3, maxR(bl.n));
+    file[0] = 0;
+    for (var i = 0; i < out; i++) {
       fly(rnd(r.x0, r.x1), rnd(r.y0, r.y1), to.x, to.y - 8, { d: i * 0.12, done: function () { flare[1] = 1; S.tick(1, 4); } });
     }
-    file[1] = Math.min(LCAP, file[1] + spentC);
+    file[1] = Math.min(LCAP, out);
+    bl.draft = null;
     bl.stage = 2;
     dirty = true;
     S.sorted(0, 3);
@@ -960,6 +1139,9 @@
     var s = ses, bl = s.bl;
     s.offer = [];
     bl.stage = 5;
+    // знак кнопки журнала берётся из того, что есть в хранилище
+    var have = INV().items().filter(function (it) { return it.k !== 'shape' && it.g; });
+    bl.pin = have.length ? have[Math.floor(Math.random() * have.length)].g : randomGlyph();
     if (bl.inst && !T.objects[bl.inst.type].repeat) objRead[bl.inst.text] = 1;
     dirty = true;
     journal.fresh = 1;
@@ -1049,11 +1231,29 @@
   }
 
   function press(x, y) {
-    if (journal.open) { journal.open = false; S.tab(1); return; }
+    if (journal.open) {
+      var sel = null, hitJ = null;
+      journal.hits.forEach(function (h) {
+        if (h.bl.id === journal.sel) sel = h;
+        if (x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1) hitJ = h;
+      });
+      if (sel && Math.abs(x - sel.px) < 16 && Math.abs(y - sel.py) < 16) { unpin(sel.bl); return; }
+      if (hitJ) { journal.sel = journal.sel === hitJ.bl.id ? null : hitJ.bl.id; S.key(1); return; }
+      journal.open = false; journal.sel = null; S.tab(1);
+      return;
+    }
+    if (!ses || ses.choose) {
+      for (var pi = 0; pi < blocks.length; pi++) {
+        var pb = blocks[pi];
+        if (pb.stage < 5 || pb.inJ || !pb.pin) continue;
+        var pp = pinPos(pb), pr = Math.max(14, F.CELL * 0.4);
+        if (Math.abs(x - pp.x) < pr && Math.abs(y - pp.y) < pr) { pinToJournal(pb); return; }
+      }
+    }
     if (!ses) return;
     var s = ses;
     if (s.choose) { pressChoose(x, y); return; }
-    if (s.stage === 0) { pressCorners(x, y); return; }
+    if (s.stage === 0) return;
     if (s.stage === 4) { pressLines(x, y); return; }
     if (hitBtn(x, y)) {
       if (s.stage === 1) finishTiling();
@@ -1078,6 +1278,7 @@
           var hitP = p.cells.some(function (q) { return p.x + q[0] === cx && p.y + q[1] === cy; });
           if (hitP) {
             s.placed.splice(j, 1);
+            saveDraft(s);
             s.drag = { item: p.item, rot: p.rot || 0, x: x, y: y };
             S.grip(true);
             return;
@@ -1129,6 +1330,7 @@
       var np = { item: d.item, scale: 1, rot: d.rot || 0, cells: cells, x: sn.x, y: sn.y, shake: 0 };
       if (f.ok && costOf(s.placed.concat([np])) <= file[0]) {
         s.placed.push(np);
+        saveDraft(s);
         S.knock();
       } else { reject(0.5); }
       return;
@@ -1166,7 +1368,7 @@
   function stepSession(dt) {
     if (ses.choose) return;
     var s = ses, bl = s.bl, P = env.pointer, show = false, rect = null;
-    if (s.stage === 0 && s.forming >= 0) {
+    if (s.stage === 0) {
       s.forming += dt;
       if (s.forming >= 1.7) {
         bl.stage = 1; bl.num = creatureNo; bl.ejn = ejectedNo;
@@ -1207,6 +1409,7 @@
 
   function buildMarks() {
     marks.clear();
+    var nb = nextBase();
     blocks.forEach(function (bl) {
       var active = !!(ses && ses.bl === bl);
       var framed = bl.stage >= 1 || (active && ses.stage === 0 && ses.forming >= 0);
@@ -1222,7 +1425,7 @@
         }
       }
       // у заготовки записи объекта символы границы рисуются отдельно, цветом
-      if (bl.inst && bl.stage === 0 && !framed) {
+      if (bl.stage === 0 && (bl.inst || bl === nb) && !framed) {
         for (var e = 0; e < bl.n; e++) {
           var ex = e % bl.w, ey = (e / bl.w) | 0;
           if (ex > 0 && ex < bl.w - 1 && ey > 0 && ey < bl.h - 1) continue;
@@ -1231,13 +1434,6 @@
       }
       if (!active) return;
       var s = ses;
-      if (s.stage === 0) {
-        corners(bl).forEach(function (k, i) {
-          var wx = (bl.ox + k % bl.w) % F.W, wy = (bl.oy + ((k / bl.w) | 0)) % F.H, j = F.jitter(wx, wy);
-          marks.set(F.ckey(wx, wy), { id: bl.cells[k], still: 1, px: -j.x, py: -j.y,
-            grow: s.hit[i] ? 0.6 : 0.3 + 0.2 * Math.sin(now * 3.2 + i), lit: 1 });
-        });
-      }
       if (s.stage === 2) {
         s.rem.forEach(function (k) {
           var m2 = marks.get(cellKey(bl, k));
@@ -1335,7 +1531,7 @@
 
   /* Заготовка записи объекта: мигают символы её границы. */
   function drawObjSeed(ctx, bl, hot) {
-    var green = bl.def.color === 'green';
+    var green = bl.def.color === 'green', white = !bl.inst;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     for (var k = 0; k < bl.n; k++) {
@@ -1344,7 +1540,10 @@
       var p = cellXY(bl, k), ph = k * 0.7, a, sc = 1;
       ctx.save();
       ctx.translate(p.x, p.y);
-      if (green) {
+      if (white) {
+        // журнал корабля светится тихо и ровно
+        a = 0.2 + 0.1 * Math.sin(now * 1.3 + ph * 0.3);
+      } else if (green) {
         ctx.rotate(now * 1.6 + ph);
         sc = 0.9 + 0.15 * Math.sin(now * 2.2 + ph);
         a = 0.55 + 0.35 * Math.sin(now * 3 + ph);
@@ -1554,11 +1753,12 @@
   function draw(ctx, t) {
     if (!env || !env.active()) return;
     ctx.save();
+    var nb = nextBase();
     blocks.forEach(function (bl) {
       var active = !!(ses && ses.bl === bl);
       var choosing = !!(ses && ses.choose && ses.choose.indexOf(bl) >= 0);
-      if (bl.inst && bl.stage === 0) drawObjSeed(ctx, bl, choosing);
-      if (choosing && (bl.stage >= 1 || !bl.inst)) {
+      if (bl.stage === 0 && (bl.inst || bl === nb)) drawObjSeed(ctx, bl, choosing);
+      if (choosing && bl.stage >= 1) {
         // запись, которую можно выбрать: вокруг неё пульсирует рамка
         var cr = rectOf(bl), cp = 0.5 + 0.5 * Math.sin(now * 5);
         ctx.save();
@@ -1578,6 +1778,8 @@
       var wordsOn = active && ses.stage === 3;
       if (!textOn && !wordsOn && !bl.words) bl.tiles.forEach(function (tl) { drawTileEdges(ctx, bl, tl.c, 'rgba(236,244,255,0.55)', 1.2); });
       if (!textOn && !wordsOn && bl.words) bl.words.forEach(function (c) { drawTileEdges(ctx, bl, cellsAbs(bl, c), 'rgba(236,244,255,0.5)', 1.2); });
+      // начатая укладка видна и вне этапа
+      if (bl.stage === 1 && bl.draft && !(active && ses.stage === 1)) bl.draft.forEach(function (d) { drawTileEdges(ctx, bl, d.c, 'rgba(255,190,110,0.6)', 1.6); });
       ctx.restore();
       Object.keys(bl.restored).forEach(function (kk) {
         var k = +kk;
@@ -1589,19 +1791,9 @@
       if (bl.stage >= 3 && bl.stage < 5 && bl.dots.length && !(active && ses.stage === 4)) drawDividers(ctx, bl);
       // прочитанная запись остаётся текстом прямо в своей рамке на карте
       if (bl.stage >= 5 && !(active && ses.stage === 4)) drawBlockText(ctx, bl, null);
+      if (bl.stage >= 5 && !bl.inJ && bl.pin) drawPin(ctx, bl);
       if (!active) return;
       var s = ses;
-      if (s.stage === 0) {
-        corners(bl).forEach(function (k, i) {
-          var p = cellXY(bl, k), pu = 0.5 + 0.5 * Math.sin(now * 3.2 + i);
-          ctx.save();
-          ctx.globalCompositeOperation = 'lighter';
-          ctx.translate(p.x, p.y);
-          glowStroke(ctx, 'rgba(240,246,255,' + (s.hit[i] ? 0.95 : 0.4 + pu * 0.45) + ')', 12 + pu * 10, 1.6);
-          G.drawGlyph(ctx, bl.cells[k], F.CELL * (s.hit[i] ? 0.8 : 0.66 + pu * 0.1), 1.6);
-          ctx.restore();
-        });
-      }
       if (s.stage === 1) {
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
@@ -1727,17 +1919,19 @@
     ctx.font = FONT;
     ctx.textBaseline = 'middle';
     var any = false;
+    journal.hits = [];
     blocks.forEach(function (bl) {
-      if (bl.stage < 5) return;
+      if (bl.stage < 5 || !bl.inJ) return;
       any = true;
-      var top = y - 20;
+      var top = y - 20, sel = journal.sel === bl.id;
+      ctx.globalAlpha = journal.k * (journal.sel && !sel ? 0.3 : 1);
       bl.def.sentences.forEach(function (d) {
         var x = x0 + 20;
         d.text.forEach(function (tok) {
           var isNum = numTok(bl, tok) !== null;
           var jcmd = tok.indexOf('#cmd:') === 0 ? (T.commands[tok.slice(5)] || []) : null;
           var ww = jcmd ? 22 * jcmd.length : isNum ? 28 : ctx.measureText(tok).width;
-          if (x + ww > x0 + colW - 20) { x = x0 + 20; y += 28; }
+          if (x + ww > x0 + colW - 60) { x = x0 + 20; y += 28; }
           if (jcmd) {
             ctx.save(); ctx.strokeStyle = 'rgba(255,200,130,0.95)';
             jcmd.forEach(function (g, ci) { ctx.save(); ctx.translate(x + 11 + ci * 22, y); G.drawGlyph(ctx, g, 18, 1.2); ctx.restore(); });
@@ -1752,11 +1946,25 @@
         });
         y += 36;
       });
-      ctx.strokeStyle = 'rgba(236,244,255,0.45)';
-      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = sel ? 'rgba(255,236,200,0.95)' : (bl.inst ? objColor(bl, 0.5) : 'rgba(236,244,255,0.45)');
+      ctx.lineWidth = sel ? 2.2 : 1.4;
       ctx.strokeRect(x0 + 0.5, top + 0.5, colW - 1, y - top - 10);
+      var hit = { bl: bl, x0: x0, y0: top, x1: x0 + colW, y1: y - 10, px: x0 + colW - 22, py: top + 20 };
+      journal.hits.push(hit);
+      if (sel) {
+        // тем же знаком запись отвязывается от журнала
+        var ok = haveGlyph(bl.pin), pu = 0.5 + 0.5 * Math.sin(t * 3);
+        ctx.save();
+        ctx.translate(hit.px, hit.py);
+        ctx.globalCompositeOperation = 'lighter';
+        glowStroke(ctx, ok ? 'rgba(255,236,200,' + (0.5 + 0.4 * pu).toFixed(3) + ')' : 'rgba(150,130,110,0.45)', ok ? 10 : 0, 1.3);
+        ctx.strokeRect(-13, -13, 26, 26);
+        G.drawGlyph(ctx, bl.pin, 18, 1.2);
+        ctx.restore();
+      }
       y += 26;
     });
+    ctx.globalAlpha = journal.k;
     // события корабля записаны словами, которых ещё никто не прочёл
     for (var i = ship.length - 1; i >= 0 && i >= ship.length - 12; i--) {
       var x = x0 + 20;
@@ -1790,10 +1998,21 @@
       buildBlocks();
       built = true;
       syncObjBlocks();
-      var b0 = blocks[0];
-      F.setCam(b0.ox + b0.w / 2 - v.w / 2 / F.CELL, b0.oy + b0.h / 2 - (v.h - 110) / 2 / F.CELL);
+      var b0 = nextBase() || blocks[0];
+      if (b0) F.setCam(b0.ox + b0.w / 2 - v.w / 2 / F.CELL, b0.oy + b0.h / 2 - (v.h - 110) / 2 / F.CELL);
     }
     syncObjBlocks();
+    if (!ses) {
+      // выбор, оставшийся без фигур (прежние сохранения), отменяется
+      blocks.forEach(function (b) {
+        if (b.stage !== 1 || (b.draft && b.draft.length)) return;
+        b.stage = 0; b.tiles = [];
+        errs = Math.min(ERR_CAP, errs + file[0]); file[0] = 0;
+      });
+      // начатая запись сразу открывает свой этап
+      var w = current();
+      if (w) folderClick(slotOf(w.stage));
+    }
     S.room('lore');
   }
 
@@ -1814,11 +2033,14 @@
     press: press, release: release, move: move, wheel: wheel, folderClick: folderClick,
     busy: function () { return !!ses && !ses.choose; },
     /* Ошибка навигационного анализа — стак ошибок в первую лорную папку. */
-    credit: function (n) { errs = Math.min(LCAP, errs + (n || 1)); flare[0] = 1; dirty = true; },
+    credit: function (n) { n = n || 1; errs = Math.min(ERR_CAP, errs + n); stats.errors += n; flare[0] = 1; dirty = true; },
+    stat: function (k, v) { stats[k] = (stats[k] || 0) + v; },
     /* Новое существо за пультом. Утилизация по износу — не выброс: её корабль
        выбросом не считает, и записи о сбоях от неё не открываются. */
     newCreature: function (reason) {
       ejectedNo = creatureNo; creatureNo++; lives++; ejectSector = sector;
+      // серые точки принадлежат существу: новое начинает с пустой шкалой
+      errs = 0;
       if (reason !== 'age') ejects++;
       dropObjects();
       dirty = true;
@@ -1832,6 +2054,9 @@
     addObject: addObject,
     objAvailable: function (type) { return objTextFree(type).length > 0; },
     objLogs: function () { return objInst.slice(); },
+    // для проверок: где кнопка журнала у записи и что с ней
+    pinAt: function (id) { var b = blockById(id); return b ? { pos: pinPos(b), pin: b.pin, inJ: b.inJ, stage: b.stage } : null; },
+    journalHits: function () { return journal.hits.map(function (h) { return { id: h.bl.id, x: (h.x0 + h.x1) / 2, y: (h.y0 + h.y1) / 2, px: h.px, py: h.py }; }); },
     flag: function (k, v) { if (v !== undefined) { objFlags[k] = v; dirty = true; } return !!objFlags[k]; },
     ejects: function () { return ejects; },
     ship: function (kind) {
@@ -1844,18 +2069,19 @@
     toggleJournal: function () {
       journal.open = !journal.open;
       journal.fresh = 0;
+      journal.sel = null;
       if (journal.open) journal.scroll = 0;
       S.tab(journal.open ? 1 : 0);
     },
     folderView: function () {
       var used = ses && ses.stage === 1 ? costOf(ses.placed) : 0;
-      var charge = Math.max(0, file[0] - used);
-      var dark0 = [];
-      for (var i = 0; i < Math.min(LCAP, charge + errs); i++) dark0.push(i >= charge);
+      var charge = Math.max(0, file[0] - used), dark0 = [];
+      for (var i = 0; i < charge; i++) dark0.push(true);
       return {
-        counts: [Math.min(LCAP, charge + errs), file[1], file[2], file[3]],
+        counts: [charge, file[1], file[2], file[3]],
         active: ses ? (ses.choose ? ses.slot : slotOf(ses.stage)) : -1, cap: LCAP, icons: SLOT_ICON, flare: flare,
-        dark: [dark0, [], [], []]
+        dark: [dark0, [], [], []],
+        scale: { n: errs, cap: ERR_CAP, glow: now - lackAt }
       };
     },
     /* Всё вне записи гаснет, пока идёт этап. На последнем этапе гаснет всё. */
@@ -1871,21 +2097,23 @@
     serialize: function () {
       var logs = {};
       if (built) blocks.forEach(function (b) {
-        logs[b.id] = { stage: b.stage, cells: b.cells, tiles: b.tiles, targets: b.targets, restored: b.restored, dots: b.dots, num: b.num, ejn: b.ejn, words: b.words, sec: b.sec };
+        logs[b.id] = { stage: b.stage, cells: b.cells, tiles: b.tiles, targets: b.targets, restored: b.restored, dots: b.dots, num: b.num, ejn: b.ejn, words: b.words, sec: b.sec, draft: b.draft, pin: b.pin, inJ: b.inJ };
       });
       else if (saved) logs = saved;
       return { v: 2, errs: errs, file: file.slice(), creature: creatureNo, ejects: ejects, ejected: ejectedNo, lives: lives, sector: sector, ejectSector: ejectSector,
-        objs: objInst, objRead: objRead, objLost: objLost, objFlags: objFlags, objUid: objUid, ship: ship.slice(-40).map(function (s) { return s.kind; }), logs: logs };
+        stats: stats, layout: layout, objs: objInst, objRead: objRead, objLost: objLost, objFlags: objFlags, objUid: objUid, ship: ship.slice(-40).map(function (s) { return s.kind; }), logs: logs };
     },
     load: function (d) {
       if (!d) return;
       if (d.v === 2) {
-        errs = clamp(d.errs | 0, 0, LCAP);
+        errs = clamp(d.errs | 0, 0, ERR_CAP);
         if (Array.isArray(d.file) && d.file.length === 4) file = d.file.map(function (x) { return clamp(x | 0, 0, LCAP); });
         creatureNo = Math.max(1, d.creature | 0);
         ejects = d.ejects | 0; ejectedNo = d.ejected | 0;
         lives = d.lives || 1; sector = d.sector || 14; ejectSector = d.ejectSector || sector;
         objInst = Array.isArray(d.objs) ? d.objs.filter(function (i) { return i && T.objects[i.type]; }) : [];
+        if (d.stats) for (var sk in d.stats) stats[sk] = d.stats[sk];
+        layout = d.layout || {};
         objRead = d.objRead || {}; objLost = d.objLost || {}; objFlags = d.objFlags || {};
         objUid = d.objUid || (objInst.reduce(function (m, i) { return Math.max(m, i.uid); }, 0) + 1);
         saved = d.logs || null;

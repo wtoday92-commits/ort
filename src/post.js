@@ -33,7 +33,7 @@
     'uniform float blurAmt;',    // размытие: существо видит всё хуже
     'uniform float lids;',       // веки: 0 — глаза открыты, 1 — закрыты
     'uniform float edge;',       // помехи по краю экрана
-    'uniform float dark;',       // сильный срыв картинки: передача управления, переезд, выброс
+    'uniform float dark;', 'vec2 mirror(vec2 u) { return 1.0 - abs(mod(u, 2.0) - 1.0); }',       // сильный срыв картинки: передача управления, переезд, выброс
 
     'float hash(vec2 v){ return fract(sin(dot(v, vec2(12.9898, 78.233))) * 43758.5453); }',
 
@@ -69,6 +69,8 @@
     '  vec2 uR = (q + ca) * 0.5 + 0.5;',
     '  vec2 uG = q * 0.5 + 0.5;',
     '  vec2 uB = (q - ca) * 0.5 + 0.5;',
+    // картинка уходит вдаль, но не кончается: вокруг неё зеркальные копии поля
+    '  if (scaleOut < 0.999) { uR = mirror(uR); uG = mirror(uG); uB = mirror(uB); }',
 
     '  vec3 c = vec3(0.0);',
     '  if (uG.x > 0.0 && uG.x < 1.0 && uG.y > 0.0 && uG.y < 1.0) {',

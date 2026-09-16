@@ -65,9 +65,9 @@
   // --- этапы и папки ---------------------------------------------------------
 
   /* NONE — свободный режим: ни один этап не выбран, поле можно просто
-     рассматривать. Мини-игра, доигранная или брошенная, ВСЕГДА возвращает сюда.
-     Иначе приходилось переключаться на чужой этап и обратно, лишь бы запустить
-     свой заново. */
+     рассматривать и открыть пульт команд. Включается он только повторным
+     нажатием по текущему этапу; доигранная мини-игра остаётся на своём этапе.
+     В свободном режиме этап, где больше всего работы, мягко светится белым. */
   var PHASE = { NONE: -1, COLLECT: 0, ANALYZE: 1, SORT: 2, PURGE: 3 };
   var phase = PHASE.COLLECT;
   var FOLDER_CAP = 9;             // три ряда по три квадрата
@@ -773,7 +773,6 @@
     var left = chains.filter(function (q) { return !q.done; });
     if (!left.length) {
       chains = []; marks.clear(); F.setMarks(null);
-      phase = PHASE.NONE;              // цепочки кончились, этап отработал
     }
   }
 
@@ -980,7 +979,6 @@
     var rc = SZ.rect();
     SZ.commit();
     var r = sortRes; sortRes = null;
-    phase = PHASE.NONE;                 // этап отработал, возвращаемся в свободный режим
     if (!r) return;
 
     // собрано не всё или группы сомкнулись — ошибка этапа; сомкнувшиеся дают две точки
@@ -1051,7 +1049,7 @@
     stageRun(PHASE.PURGE);
     lastSplits = 0;
     // папка утилизации полна: сперва её надо опустошить кнопкой
-    if (unitsAt(3).length >= FOLDER_CAP) { S.reject(); reject = 0.6; phase = PHASE.NONE; return; }
+    if (unitsAt(3).length >= FOLDER_CAP) { S.reject(); reject = 0.6; return; }
     var cells = [];
     for (var i = 0; i < Math.min(3, pend.length); i++) {
       /* После переезда цепочка единицы лежит на старой карте. На новом месте
@@ -1068,7 +1066,6 @@
       for (var q = 0; q < purgeUnits.length; q++) purgeUnits[q].stage = 3;
       purgeUnits = [];
       syncFolders();
-      phase = PHASE.NONE;
       return;
     }
     PG.build(F, cells);
@@ -1104,7 +1101,6 @@
     act(PHASE.PURGE);
     // расщеплённые знаки остались на поле осколками, и корабль это заметил
     if (r.splits) nudge(r.splits * 1.1);
-    phase = PHASE.NONE;
   }
 
   /* Кнопка утилизации. Утилизированное копится в последней папке, пока его не
@@ -1535,15 +1531,17 @@
           eject.door = true;
           S.ejectDoor();
           tearPulse = 1; shake = 1.4;
-          F.easeZoom(0.35);
         }
-        var v = Math.min(1, (e - A) / (D - A));
+        var D2 = (D - A) / 3, v = Math.min(1, (e - A) / D2);
+        // поле уходит вдаль постепенно, вместе со всей сценой
+        F.easeZoom(1 - 0.65 * v);
         ejectFx.edge = Math.max(0, 0.85 * (1 - v * 4));
         ejectFx.scale = 1 - 0.72 * (1 - Math.pow(1 - v, 2.2));
         ejectFx.blur = Math.min(1, v * 1.4);
         // пытается держать глаза открытыми: веки смыкаются, вздрагивают и снова приоткрываются
-        var blink = Math.max(0, Math.sin(e * (0.9 + v * 2.2)));
-        ejectFx.lids = Math.min(1, 0.15 + v * 0.8 + blink * 0.3 * v - (1 - v) * 0.15);
+        var blink = Math.max(0, Math.sin(e * (3 + v * 7)));
+        // моргает сразу, часто и сильно, но между морганиями глаза приоткрыты
+        ejectFx.lids = Math.min(1, 0.1 + v * 0.5 + blink * (0.3 + 0.45 * v));
         ejectFx.dark = Math.min(1, Math.max(0, (v - 0.55) / 0.45));
       }
       // суматошный курсор: существо мечется по полю
@@ -1555,7 +1553,7 @@
                   { speed: 900 + Math.random() * 1000, curve: (Math.random() - 0.5) * 1.8 });
         }
       }
-      if (e >= D) {
+      if (e >= A + (D - A) / 3) {
         eject.reset = true;
         resetCycle();
         S.vacuum(false);
@@ -1765,6 +1763,7 @@
      но голод и недосып копятся. */
   function deny(kind) {
     S.indignant();
+    LORE.stat('denied', 1);
     LORE.ship(kind + '_denied');
     if (kind === 'lunch') {
       lunchDenied++; lunchDue = t + LUNCH_RETRY;
@@ -2043,6 +2042,31 @@
 
   // --- отрисовка -------------------------------------------------------------
 
+  /* Шкала серых точек под лорными папками: ошибки, накопленные на навигации. */
+  function scalePos(i, n) { return { x: vw / 2 + (i - (n - 1) / 2) * 15, y: vh - 16 }; }
+
+  function drawScale(sc) {
+    if (!sc) return;
+    var glow = sc.glow < 1.6 ? 1 - sc.glow / 1.6 : 0;
+    ctx.save();
+    for (var i = 0; i < sc.n; i++) {
+      var p = scalePos(i, sc.n);
+      if (glow > 0) {
+        ctx.fillStyle = 'rgba(240,244,255,' + (0.35 * glow * (0.6 + 0.4 * Math.sin(t * 12))).toFixed(3) + ')';
+        ctx.beginPath(); ctx.arc(p.x, p.y, 9, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(90,90,88,0.2)';
+      ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = glow > 0 ? 'rgba(224,226,230,0.95)' : 'rgba(118,116,110,0.95)';
+      ctx.beginPath(); ctx.arc(p.x, p.y, 3.2, 0, Math.PI * 2); ctx.fill();
+    }
+    if (!sc.n && glow > 0) {
+      ctx.strokeStyle = 'rgba(240,244,255,' + (0.5 * glow).toFixed(3) + ')';
+      ctx.beginPath(); ctx.arc(vw / 2, vh - 16, 5, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   function folderPos(i) {
     var gap = 100, x0 = vw / 2 - (4 * gap - gap) / 2;
     return { x: x0 + i * gap, y: vh - 64 };
@@ -2100,6 +2124,7 @@
     var cap = lv ? lv.cap : FOLDER_CAP, gap = lv ? 5.2 : 3.2;
     for (var i = 0; i < 4; i++) {
       var p = folderPos(i), on = lv ? i === lv.active : i === phase, w = 62;
+      var want = !lv && phase === PHASE.NONE && i === needPhase();
       ctx.save();
       ctx.translate(p.x, p.y);
       if (on) {
@@ -2123,6 +2148,15 @@
       ctx.quadraticCurveTo(0, 28, w / 2, 16);
       ctx.lineTo(w / 2, -26);
       ctx.stroke();
+      if (want) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.shadowColor = 'rgba(255,255,255,0.9)'; ctx.shadowBlur = 14;
+        ctx.strokeStyle = 'rgba(240,244,255,' + (0.35 + 0.25 * Math.sin(t * 2.2)).toFixed(3) + ')';
+        ctx.lineWidth = 2.2;
+        ctx.stroke();
+        ctx.restore();
+      }
       var fl = lv ? lv.flare[i] : folderFlare[i];
       if (fl > 0) {
         ctx.save();
@@ -2450,6 +2484,8 @@
 
   /* Переключение вкладки подменяет поле целиком. Начатая навигационная работа
      закрывается: знаки остаются как есть. */
+  var navPhase = PHASE.COLLECT;   // этап, на котором игрок ушёл в лор
+
   function switchPanel(p, force) {
     if (p === panel) return;
     if (!force && ((move && move.st === 'jump') || eject)) return;
@@ -2459,6 +2495,7 @@
       // существо на обеде или спит, а игрок ушёл в лор: перерыв засчитан, существо вернулось
       if (con && con.mode) { fed(con.mode); forced = false; creature.st = 'resume'; creature.sub = 'go'; creature.timer = 0.5; }
       closeConsole(true);
+      navPhase = phase;
       deactivate(true);
       reveals.clear(); boost.clear(); F.setBoost(null);
       navWorld = F.saveWorld();
@@ -2469,6 +2506,7 @@
       LORE.leave();
       F.loadWorld(navWorld);
       panel = 0;
+      if (navPhase >= 0) setPhase(navPhase);
     }
     inject = [];
     button = null;
@@ -2520,6 +2558,7 @@
     /* Вход в лорную вкладку для существа останавливает время: обед и сон
        отодвигаются ровно на столько, сколько игрок провёл в лоре. */
     if (panel === 1) {
+      LORE.stat('loreTime', dt);
       if (isFinite(lunchDue)) lunchDue += dt;
       if (isFinite(sleepDue)) sleepDue += dt;
     }
@@ -2661,14 +2700,19 @@
       drawConsole();
       drawSpinDrag();
     } else LORE.draw(ctx, t);
-    drawFolders();
-    drawFlush();
-    drawButton();
-    drawGuide();
+    // пока картинка уходит вдаль, интерфейса нет: поле размножается во все стороны
+    var uiOn = ejectFx.scale > 0.995;
+    if (uiOn) {
+      drawFolders();
+      if (panel === 1) drawScale(LORE.folderView().scale);
+      drawFlush();
+      drawButton();
+      drawGuide();
+    }
     if (panel === 1) { LORE.drawJournal(ctx, t); INV.draw(ctx, t, vw, vh); }
-    drawMenu();
+    if (uiOn) drawMenu();
     drawReject();
-    drawCursor();
+    if (uiOn) drawCursor();
     ctx.restore();
     if (!(post && post.ok) && (ejectFx.dark > 0 || ejectFx.lids > 0)) {
       // без WebGL веки и темнота рисуются просто полосами
@@ -2907,6 +2951,7 @@
       view: function () { return { w: vw, h: vh }; },
       pointer: Pointer,
       folderPos: folderPos,
+      scalePos: scalePos,
       pulse: function (x, y, s) { pulses.push({ x: x, y: y, age: 0, strong: !!s }); },
       outside: function (rc, x, y) { return outsidePoint(rc, x, y, 36); },
       train: function (cells, slot, essence, onDone) { launchTrain(cells, slot, onDone, essence); },
