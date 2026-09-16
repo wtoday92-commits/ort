@@ -55,7 +55,7 @@
            пустота по-прежнему не двигается никогда. */
         var vd = F.isVoidCell(wx, wy);
         // разложенные раньше группы неприкосновенны: их не вытолкнуть и не заместить
-        var sp = !vd && (F.isSpecial(wx, wy) || F.isSorted(wx, wy));
+        var sp = !vd && (F.isSpecial(wx, wy) || F.isSorted(wx, wy) || F.objAt(wx, wy) > 0);
         cells[idx(x, y)] = { id: vd ? F.VOID_GID : id, anchor: false, fixed: sp, isVoid: vd, px: 0, py: 0, set: false };
         if (!sp && !vd && gids.indexOf(id) >= 0) (occ[id] = occ[id] || []).push(idx(x, y));
       }

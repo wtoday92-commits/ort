@@ -44,7 +44,10 @@
   var errs = 0;                           // стаки ошибок, тёмные ячейки первой папки
   var file = [0, 0, 0, 0];                // file[0] — заряд рамки, дальше ячейки этапов
   var flare = [0, 0, 0, 0];
-  var creatureNo = 1;
+  var creatureNo = 9;                     // первое встреченное существо — старик под номером 9
+  var lives = 1;                          // сколько существ сменилось за пультом при игроке
+  var sector = 14, ejectSector = 14;      // текущий сектор; сектор, где выброшена последняя капсула
+  var objInst = [], objRead = {}, objLost = {}, objFlags = {}, objUid = 1;
   var ejects = 0, ejectedNo = 0;          // сколько существ уже выброшено и номер последнего
   var blocks = [], ship = [];
   var journal = { open: false, scroll: 0, fresh: 0, k: 0, max: 0 };
@@ -107,25 +110,110 @@
     return 1;
   }
 
+  function makeBlock(d, i, extra) {
+    var bl = {
+      i: i, def: d, id: d.id, w: d.w, h: d.h, n: d.w * d.h,
+      ox: ((F.W >> 1) + d.at[0] + F.W) % F.W, oy: ((F.H >> 1) + d.at[1] + F.H) % F.H,
+      stage: 0, cells: null, tiles: [], targets: null, restored: {}, dots: [], num: 0, words: null,
+      sec: 0, onum: 0, inst: null
+    };
+    if (extra) for (var ek in extra) bl[ek] = extra[ek];
+    var sv = saved && saved[d.id];
+    if (sv) {
+      bl.stage = sv.stage | 0; bl.cells = sv.cells || null; bl.tiles = sv.tiles || [];
+      bl.targets = sv.targets || null; bl.restored = sv.restored || {}; bl.dots = sv.dots || []; bl.num = sv.num || 0; bl.ejn = sv.ejn || 0; bl.words = sv.words || null;
+      bl.sec = sv.sec || bl.sec;
+    }
+    if (!bl.cells || bl.cells.length !== bl.n) {
+      bl.cells = [];
+      for (var k = 0; k < bl.n; k++) bl.cells.push(fillerGid(bl.ox + k % bl.w, bl.oy + ((k / bl.w) | 0)));
+    }
+    for (var q = 0; q < bl.n; q++) F.setOverride(cellKey(bl, q), bl.cells[q]);
+    blocks.push(bl);
+    return bl;
+  }
+
   function buildBlocks() {
-    T.logs.forEach(function (d, i) {
-      var bl = {
-        i: i, def: d, id: d.id, w: d.w, h: d.h, n: d.w * d.h,
-        ox: ((F.W >> 1) + d.at[0] + F.W) % F.W, oy: ((F.H >> 1) + d.at[1] + F.H) % F.H,
-        stage: 0, cells: null, tiles: [], targets: null, restored: {}, dots: [], num: 0, words: null
-      };
-      var sv = saved && saved[d.id];
-      if (sv) {
-        bl.stage = sv.stage | 0; bl.cells = sv.cells || null; bl.tiles = sv.tiles || [];
-        bl.targets = sv.targets || null; bl.restored = sv.restored || {}; bl.dots = sv.dots || []; bl.num = sv.num || 0; bl.ejn = sv.ejn || 0; bl.words = sv.words || null;
-      }
-      if (!bl.cells || bl.cells.length !== bl.n) {
-        bl.cells = [];
-        for (var k = 0; k < bl.n; k++) bl.cells.push(fillerGid(bl.ox + k % bl.w, bl.oy + ((k / bl.w) | 0)));
-      }
-      for (var q = 0; q < bl.n; q++) F.setOverride(cellKey(bl, q), bl.cells[q]);
-      blocks.push(bl);
+    T.logs.forEach(function (d, i) { makeBlock(d, i); });
+  }
+
+  /* --- записи найденных объектов ------------------------------------------- */
+  /* Собранный на навигации объект оставляет в лорной вкладке заготовку своей
+     записи: символы её границы мигают цветом класса — зелёные крутятся (сделанное),
+     синие медленно проступают и гаснут (природное). Открывается запись теми же
+     этапами. Не дочитанная до следующей смены существа — теряется: природная
+     возвращается в пул и может встретиться снова, рукотворная — навсегда. */
+  var OBJ_COLS = [-18, 10, -30, 22, -42, 34];
+
+  function objSlotAt(slot) {
+    var n = OBJ_COLS.length;
+    return [OBJ_COLS[slot % n], -2 + Math.floor(slot / n) * 5];
+  }
+
+  function objDef(inst) {
+    var od = T.objects[inst.type], tx = od.texts[0];
+    od.texts.forEach(function (x) { if (x.id === inst.text) tx = x; });
+    return { id: 'obj:' + inst.uid, color: od.cls === 'art' ? 'green' : 'blue', at: objSlotAt(inst.slot),
+             w: 8, h: 3, sentences: tx.sentences, extra: [] };
+  }
+
+  function syncObjBlocks() {
+    objInst.forEach(function (inst) {
+      if (blocks.some(function (b) { return b.inst === inst; })) return;
+      makeBlock(objDef(inst), blocks.length, { inst: inst, onum: inst.onum || 0, sec: inst.sec || 0 });
     });
+  }
+
+  function objTextFree(type) {
+    var od = T.objects[type];
+    if (!od) return [];
+    return od.texts.filter(function (x) {
+      if (od.repeat) return true;
+      if (objRead[x.id] || objLost[x.id]) return false;
+      return !objInst.some(function (i) { return i.text === x.id; });
+    });
+  }
+
+  function addObject(o) {
+    var free = objTextFree(o.type);
+    if (!free.length) return false;
+    var tx = free[Math.floor(Math.random() * free.length)], slot = 0;
+    while (objInst.some(function (i) { return i.slot === slot; })) slot++;
+    objInst.push({ uid: objUid++, type: o.type, text: tx.id, onum: o.onum || 0, sec: sector, slot: slot });
+    flare[0] = 1;
+    dirty = true;
+    if (built && env && env.active()) syncObjBlocks();
+    return true;
+  }
+
+  function blockOf(inst) {
+    for (var i = 0; i < blocks.length; i++) if (blocks[i].inst === inst) return blocks[i];
+    return null;
+  }
+
+  /* Смена существа: недочитанные записи объектов теряются. */
+  function dropObjects() {
+    objInst = objInst.filter(function (inst) {
+      var bl = blockOf(inst), sv = saved && saved['obj:' + inst.uid];
+      var st = bl ? bl.stage : (sv ? sv.stage | 0 : 0);
+      if (st >= 5) return true;
+      var od = T.objects[inst.type];
+      if (od && od.cls === 'art' && !od.repeat) objLost[inst.text] = 1;
+      if (bl) blocks.splice(blocks.indexOf(bl), 1);
+      return false;
+    });
+  }
+
+  function numTok(bl, tok) {
+    if (tok === '#creature') return bl.num || creatureNo;
+    if (tok === '#ejected') return bl.ejn || ejectedNo;
+    if (tok === '#objnum') return bl.onum || 0;
+    if (tok === '#sector') return bl.sec || ejectSector;
+    return null;
+  }
+
+  function objColor(bl, a) {
+    return (bl.def.color === 'green' ? 'rgba(120,255,170,' : 'rgba(130,185,255,') + a + ')';
   }
 
   /* Предложения: знаки от начала до первой белой точки, между точками и от
@@ -249,29 +337,46 @@
   function slotOf(stage) { return stage <= 1 ? 0 : Math.min(3, stage - 1); }
 
   function folderClick(slot) {
-    var cur = ses ? slotOf(ses.stage) : -1;
+    var cur = ses ? (ses.choose ? ses.slot : slotOf(ses.stage)) : -1;
     if (ses) { abandon(); if (cur === slot) { S.consoleOff(); return; } }
-    /* Какую запись брать. Начатая идёт первой. Из не начатых — та, у которой
-       приоритет выше: запись об инциденте открывается раньше прочих. Записи,
-       которым нужен выброс, до первого выброса не существуют. */
-    var cands = blocks.filter(function (b) {
-      // запись существует только после нужного числа выбросов
+    /* Какую запись брать. Из журнала корабля — одну: начатая идёт первой, из
+       не начатых — та, у которой приоритет выше; записи, которым нужны выбросы,
+       до них не существуют. Записи найденных объектов предлагаются все. Если
+       вариантов больше одного, игрок выбирает сам: записи подсвечиваются, и
+       нажатие по одной из них начинает этап. */
+    function fitsSlot(b) { return slot === 0 ? (b.stage === 0 || b.stage === 1) : b.stage === slot + 1; }
+    var base = blocks.filter(function (b) {
+      if (b.inst) return false;
       var need = b.def.minEjects || (b.def.requires === 'eject' ? 1 : 0);
       if (ejects < need && b.stage === 0) return false;
-      return slot === 0 ? (b.stage === 0 || b.stage === 1) : b.stage === slot + 1;
+      return fitsSlot(b);
     });
-    cands.sort(function (a, b) {
+    base.sort(function (a, b) {
       var sa = a.stage === 1 ? 0 : 1, sb = b.stage === 1 ? 0 : 1;
       if (sa !== sb) return sa - sb;
       return (b.def.priority || 0) - (a.def.priority || 0);
     });
-    var bl = cands[0] || null;
-    if (!bl) { S.nothing(); flare[slot] = 0.5; return; }
+    var cands = base.slice(0, 1).concat(blocks.filter(function (b) { return b.inst && fitsSlot(b); }));
+    if (!cands.length) { S.nothing(); flare[slot] = 0.5; return; }
     S.phase(slot);
+    if (cands.length === 1) { startSlot(slot, cands[0]); return; }
+    ses = { choose: cands, slot: slot, stage: -1, bl: null };
+    btnReset();
+  }
+
+  function startSlot(slot, bl) {
     if (slot === 0) { if (bl.stage === 0) startCorners(bl); else startTiling(bl); }
     else if (slot === 1) startRestore(bl);
     else if (slot === 2) startWords(bl);
     else startLines(bl);
+  }
+
+  function pressChoose(x, y) {
+    var s = ses;
+    for (var i = 0; i < s.choose.length; i++) {
+      if (cellAt(s.choose[i], x, y) >= 0) { ses = null; startSlot(s.slot, s.choose[i]); return; }
+    }
+    S.nothing();
   }
 
   /* Выход из этапа: начатое откатывается, ячейки возвращаются в папку.
@@ -719,12 +824,12 @@
         x = 0;
         for (var ti = 0; ti < d.text.length; ti++) {
           var tok = d.text[ti];
-          var isNum = tok === '#creature' || tok === '#ejected';
+          var nv = numTok(bl, tok), isNum = nv !== null;
           var cmd = tok.indexOf('#cmd:') === 0 ? (T.commands[tok.slice(5)] || []) : null;
           var ww = cmd ? fs * 1.25 * cmd.length : isNum ? fs * 1.3 : widthAt(tok, fs);
           if (x + ww > maxW && x > 0) { x = 0; y += lh; }
           words.push({ s: si, text: (isNum || cmd) ? '' : tok, cmd: cmd,
-            num: isNum ? (tok === '#ejected' ? (bl.ejn || ejectedNo) : (bl.num || creatureNo)) : null,
+            num: nv,
             key: !!(d.key && tok === d.key.join('')), rx: x, ry: y, w: ww });
           x += ww + fs * 0.55;
         }
@@ -839,6 +944,7 @@
     var s = ses, bl = s.bl;
     s.offer = [];
     bl.stage = 5;
+    if (bl.inst && !T.objects[bl.inst.type].repeat) objRead[bl.inst.text] = 1;
     dirty = true;
     journal.fresh = 1;
     S.decode();
@@ -930,6 +1036,7 @@
     if (journal.open) { journal.open = false; S.tab(1); return; }
     if (!ses) return;
     var s = ses;
+    if (s.choose) { pressChoose(x, y); return; }
     if (s.stage === 0) { pressCorners(x, y); return; }
     if (s.stage === 4) { pressLines(x, y); return; }
     if (hitBtn(x, y)) {
@@ -1027,7 +1134,7 @@
       journal.scroll = Math.max(0, Math.min(journal.max, journal.scroll + dy * 0.6));
       return true;
     }
-    if (!ses) return false;
+    if (!ses || ses.choose) return false;
     if (ses.stage === 0 || ses.stage === 4) return true;
     var L = menuLayout();
     if (x >= L.m.x && x <= L.m.x + L.m.w && y >= L.m.y && y <= L.m.y + L.m.h) {
@@ -1041,10 +1148,15 @@
   // --- шаг -----------------------------------------------------------------------
 
   function stepSession(dt) {
+    if (ses.choose) return;
     var s = ses, bl = s.bl, P = env.pointer, show = false, rect = null;
     if (s.stage === 0 && s.forming >= 0) {
       s.forming += dt;
-      if (s.forming >= 1.7) { bl.stage = 1; bl.num = creatureNo; bl.ejn = ejectedNo; dirty = true; startTiling(bl); return; }
+      if (s.forming >= 1.7) {
+        bl.stage = 1; bl.num = creatureNo; bl.ejn = ejectedNo;
+        if (!bl.inst) bl.sec = ejectSector;
+        dirty = true; startTiling(bl); return;
+      }
     }
     if (s.stage === 1) { show = coverage() === bl.n; rect = rectOf(bl); }
     if (s.stage === 2) { show = s.rem.every(function (k) { return !!s.slots[k]; }); rect = rectOf(bl); }
@@ -1091,6 +1203,14 @@
           // под дочитанной записью знаков больше нет: в рамке живёт только текст
           if (bl.stage >= 5) m.hide = 1;
           marks.set(F.ckey(wx, wy), m);
+        }
+      }
+      // у заготовки записи объекта символы границы рисуются отдельно, цветом
+      if (bl.inst && bl.stage === 0 && !framed) {
+        for (var e = 0; e < bl.n; e++) {
+          var ex = e % bl.w, ey = (e / bl.w) | 0;
+          if (ex > 0 && ex < bl.w - 1 && ey > 0 && ey < bl.h - 1) continue;
+          marks.set(cellKey(bl, e), { id: bl.cells[e], still: 1, hide: 1 });
         }
       }
       if (!active) return;
@@ -1163,7 +1283,7 @@
     var r = rectOf(bl), w = r.x1 - r.x0, h = r.y1 - r.y0, L = 2 * (w + h) * clamp(prog, 0, 1);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    glowStroke(ctx, 'rgba(236,244,255,0.95)', 16, 3.4);
+    glowStroke(ctx, bl.inst ? objColor(bl, 0.95) : 'rgba(236,244,255,0.95)', 16, 3.4);
     ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.moveTo(r.x0, r.y0);
@@ -1195,6 +1315,32 @@
     edgesPath(ctx, cellsAbs, o.x, o.y, F.CELL);
     glowStroke(ctx, col, 8, lw);
     ctx.stroke();
+  }
+
+  /* Заготовка записи объекта: мигают символы её границы. */
+  function drawObjSeed(ctx, bl, hot) {
+    var green = bl.def.color === 'green';
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (var k = 0; k < bl.n; k++) {
+      var x = k % bl.w, y = (k / bl.w) | 0;
+      if (x > 0 && x < bl.w - 1 && y > 0 && y < bl.h - 1) continue;
+      var p = cellXY(bl, k), ph = k * 0.7, a, sc = 1;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      if (green) {
+        ctx.rotate(now * 1.6 + ph);
+        sc = 0.9 + 0.15 * Math.sin(now * 2.2 + ph);
+        a = 0.55 + 0.35 * Math.sin(now * 3 + ph);
+      } else {
+        a = 0.9 * Math.max(0, Math.sin(now * 0.9 + ph));
+      }
+      if (hot) a = Math.min(1, a + 0.3 + 0.2 * Math.sin(now * 6));
+      glowStroke(ctx, objColor(bl, a.toFixed(3)), 10, 1.5);
+      G.drawGlyph(ctx, bl.cells[k], F.CELL * 0.62 * sc, 1.5);
+      ctx.restore();
+    }
+    ctx.restore();
   }
 
   function drawPurgedAt(ctx, x, y, s, g, withGlyph, alpha) {
@@ -1394,6 +1540,17 @@
     ctx.save();
     blocks.forEach(function (bl) {
       var active = !!(ses && ses.bl === bl);
+      var choosing = !!(ses && ses.choose && ses.choose.indexOf(bl) >= 0);
+      if (bl.inst && bl.stage === 0) drawObjSeed(ctx, bl, choosing);
+      if (choosing && (bl.stage >= 1 || !bl.inst)) {
+        // запись, которую можно выбрать: вокруг неё пульсирует рамка
+        var cr = rectOf(bl), cp = 0.5 + 0.5 * Math.sin(now * 5);
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        glowStroke(ctx, bl.inst ? objColor(bl, (0.3 + 0.5 * cp).toFixed(3)) : 'rgba(255,200,130,' + (0.3 + 0.5 * cp).toFixed(3) + ')', 12, 2);
+        ctx.strokeRect(cr.x0 - 6, cr.y0 - 6, cr.x1 - cr.x0 + 12, cr.y1 - cr.y0 + 12);
+        ctx.restore();
+      }
       if (bl.stage >= 1) drawFrame(ctx, bl, 1);
       else if (active && ses.stage === 0 && ses.forming >= 0) drawFrame(ctx, bl, ses.forming / 1.4);
       ctx.save();
@@ -1561,7 +1718,7 @@
       bl.def.sentences.forEach(function (d) {
         var x = x0 + 20;
         d.text.forEach(function (tok) {
-          var isNum = tok === '#creature' || tok === '#ejected';
+          var isNum = numTok(bl, tok) !== null;
           var jcmd = tok.indexOf('#cmd:') === 0 ? (T.commands[tok.slice(5)] || []) : null;
           var ww = jcmd ? 22 * jcmd.length : isNum ? 28 : ctx.measureText(tok).width;
           if (x + ww > x0 + colW - 20) { x = x0 + 20; y += 28; }
@@ -1570,7 +1727,7 @@
             jcmd.forEach(function (g, ci) { ctx.save(); ctx.translate(x + 11 + ci * 22, y); G.drawGlyph(ctx, g, 18, 1.2); ctx.restore(); });
             ctx.restore();
           }
-          else if (isNum) NUM().draw(ctx, tok === '#ejected' ? (bl.ejn || ejectedNo) : (bl.num || creatureNo), x + 14, y, 26, 'rgba(255,220,180,0.95)');
+          else if (isNum) NUM().draw(ctx, numTok(bl, tok), x + 14, y, 26, 'rgba(255,220,180,0.95)');
           else {
             ctx.fillStyle = tok.charAt(0) === '⟨' ? 'rgba(255,170,90,0.65)' : 'rgba(244,240,228,0.95)';
             ctx.fillText(tok, x, y);
@@ -1616,9 +1773,11 @@
     if (!built) {
       buildBlocks();
       built = true;
+      syncObjBlocks();
       var b0 = blocks[0];
       F.setCam(b0.ox + b0.w / 2 - v.w / 2 / F.CELL, b0.oy + b0.h / 2 - (v.h - 110) / 2 / F.CELL);
     }
+    syncObjBlocks();
     S.room('lore');
   }
 
@@ -1637,13 +1796,27 @@
     init: function (e) { env = e; },
     enter: enter, leave: leave, step: step, draw: draw, drawJournal: drawJournal,
     press: press, release: release, move: move, wheel: wheel, folderClick: folderClick,
-    busy: function () { return !!ses; },
+    busy: function () { return !!ses && !ses.choose; },
     /* Ошибка навигационного анализа — стак ошибок в первую лорную папку. */
     credit: function (n) { errs = Math.min(LCAP, errs + (n || 1)); flare[0] = 1; dirty = true; },
     /* Новое существо за пультом. Утилизация по износу — не выброс: её корабль
        выбросом не считает, и записи о сбоях от неё не открываются. */
-    newCreature: function (reason) { ejectedNo = creatureNo; creatureNo++; if (reason !== 'age') ejects++; dirty = true; },
+    newCreature: function (reason) {
+      ejectedNo = creatureNo; creatureNo++; lives++; ejectSector = sector;
+      if (reason !== 'age') ejects++;
+      dropObjects();
+      dirty = true;
+    },
     creature: function () { return creatureNo; },
+    ejected: function () { return ejectedNo; },
+    lives: function () { return lives; },
+    firstEject: function () { return ejectedNo === 0; },
+    nextSector: function () { sector += 1 + Math.floor(Math.random() * 3); dirty = true; },
+    sector: function () { return sector; },
+    addObject: addObject,
+    objAvailable: function (type) { return objTextFree(type).length > 0; },
+    objLogs: function () { return objInst.slice(); },
+    flag: function (k, v) { if (v !== undefined) { objFlags[k] = v; dirty = true; } return !!objFlags[k]; },
     ejects: function () { return ejects; },
     ship: function (kind) {
       var w = T.ship[kind];
@@ -1665,13 +1838,13 @@
       for (var i = 0; i < Math.min(LCAP, charge + errs); i++) dark0.push(i >= charge);
       return {
         counts: [Math.min(LCAP, charge + errs), file[1], file[2], file[3]],
-        active: ses ? slotOf(ses.stage) : -1, cap: LCAP, icons: SLOT_ICON, flare: flare,
+        active: ses ? (ses.choose ? ses.slot : slotOf(ses.stage)) : -1, cap: LCAP, icons: SLOT_ICON, flare: flare,
         dark: [dark0, [], [], []]
       };
     },
     /* Всё вне записи гаснет, пока идёт этап. На последнем этапе гаснет всё. */
     sortRect: function () {
-      if (!ses) return null;
+      if (!ses || !ses.bl) return null;
       var r = rectOf(ses.bl), p = 10;
       return { x0: r.x0 - p, y0: r.y0 - p, x1: r.x1 + p, y1: r.y1 + p };
     },
@@ -1682,10 +1855,11 @@
     serialize: function () {
       var logs = {};
       if (built) blocks.forEach(function (b) {
-        logs[b.id] = { stage: b.stage, cells: b.cells, tiles: b.tiles, targets: b.targets, restored: b.restored, dots: b.dots, num: b.num, ejn: b.ejn, words: b.words };
+        logs[b.id] = { stage: b.stage, cells: b.cells, tiles: b.tiles, targets: b.targets, restored: b.restored, dots: b.dots, num: b.num, ejn: b.ejn, words: b.words, sec: b.sec };
       });
       else if (saved) logs = saved;
-      return { v: 2, errs: errs, file: file.slice(), creature: creatureNo, ejects: ejects, ejected: ejectedNo, ship: ship.slice(-40).map(function (s) { return s.kind; }), logs: logs };
+      return { v: 2, errs: errs, file: file.slice(), creature: creatureNo, ejects: ejects, ejected: ejectedNo, lives: lives, sector: sector, ejectSector: ejectSector,
+        objs: objInst, objRead: objRead, objLost: objLost, objFlags: objFlags, objUid: objUid, ship: ship.slice(-40).map(function (s) { return s.kind; }), logs: logs };
     },
     load: function (d) {
       if (!d) return;
@@ -1694,6 +1868,10 @@
         if (Array.isArray(d.file) && d.file.length === 4) file = d.file.map(function (x) { return clamp(x | 0, 0, LCAP); });
         creatureNo = Math.max(1, d.creature | 0);
         ejects = d.ejects | 0; ejectedNo = d.ejected | 0;
+        lives = d.lives || 1; sector = d.sector || 14; ejectSector = d.ejectSector || sector;
+        objInst = Array.isArray(d.objs) ? d.objs.filter(function (i) { return i && T.objects[i.type]; }) : [];
+        objRead = d.objRead || {}; objLost = d.objLost || {}; objFlags = d.objFlags || {};
+        objUid = d.objUid || (objInst.reduce(function (m, i) { return Math.max(m, i.uid); }, 0) + 1);
         saved = d.logs || null;
       } else if (Array.isArray(d.f)) {
         errs = clamp(d.f.reduce(function (a, b) { return a + (b | 0); }, 0), 0, LCAP);
@@ -1711,6 +1889,7 @@
     /* для проверок: где что лежит на экране */
     geom: function () {
       if (!ses) return null;
+      if (ses.choose) return { stage: 'choose', slot: ses.slot, choose: ses.choose, cellOf: function (b, k) { return cellXY(b, k); } };
       var s = ses, bl = s.bl;
       return {
         stage: s.stage, w: bl.w, h: bl.h, n: bl.n, ses: s, bl: bl,

@@ -263,6 +263,9 @@
   function clickButton() {
     if (sel !== SEL.CONFIRM) return;
     var snap = F.snapshot(vw, vh, rect);
+    // клетки уникального объекта забирает только сбор самого объекта
+    var objId = startAnchor && startAnchor.rec.obj ? startAnchor.rec.obj : 0;
+    snap = snap.filter(function (g) { var oi = F.objAt(g.wx, g.wy); return !oi || oi === objId; });
     /* Края блока забираются всегда. Отстающий якорь мог съехать за рамку, и
        тогда на его месте вместо пустоты оставался обычный знак. */
     [startAnchor, endAnchor].forEach(function (an) {
@@ -303,9 +306,73 @@
     stock.push({ gid: startAnchor ? startAnchor.rec.gid : 0, kind: startAnchor ? startAnchor.rec.kind : 0, stage: 0, chain: null, map: mapId, bad: {} });
     // знаки пустоты, образовавшиеся на сборе, уходят в хранилище числом
     INV.addVoids(humanActive() ? 'p' : 'c', snap.length);
+    if (objId) collectObject(objId);
     syncFolders();
     folderFlare[PHASE.COLLECT] = 0.001;   // разгорится, когда глифы дойдут
     act(PHASE.COLLECT);
+  }
+
+  /* Собран уникальный объект. Для корабля это не работа, а отклонение: серая
+     ячейка сбора и серая точка в лор. Для игрока — новая запись в лорной
+     вкладке. */
+  function collectObject(id) {
+    var ob = F.takeObject(id), u = stock[stock.length - 1];
+    if (!ob || !u) return;
+    u.bad = u.bad || {};
+    u.bad[PHASE.COLLECT] = true;
+    u.dotted = { 0: true };
+    LORE.credit(1);
+    var c = F.cellCenter(ob.cells[0][0], ob.cells[0][1]);
+    spawnErrDots(c.x, c.y);
+    S.error();
+    LORE.addObject({ type: ob.type, onum: ob.onum });
+  }
+
+  /* Какой объект появится на новом участке карты. Природные встречаются чаще;
+     записи, которые уже прочитаны или потеряны, больше не выпадают. */
+  var OBJ = root.LoreText.objects;
+
+  function objSpec(type, onum) {
+    var d = OBJ[type];
+    return { type: type, cls: d.cls, rows: d.rows, onum: onum || 0 };
+  }
+
+  function objPick() {
+    var list = [], tot = 0;
+    Object.keys(OBJ).forEach(function (k) {
+      if (OBJ[k].special || !LORE.objAvailable(k)) return;
+      list.push(k); tot += OBJ[k].weight || 1;
+    });
+    if (!list.length) return null;
+    var r = Math.random() * tot;
+    for (var i = 0; i < list.length; i++) {
+      r -= OBJ[list[i]].weight || 1;
+      if (r <= 0) return objSpec(list[i]);
+    }
+    return objSpec(list[list.length - 1]);
+  }
+
+  function randomNatural() {
+    var ks = Object.keys(OBJ).filter(function (k) { return OBJ[k].cls === 'nat' && !OBJ[k].special && LORE.objAvailable(k); });
+    return ks.length ? ks[Math.floor(Math.random() * ks.length)] : null;
+  }
+
+  /* Объект по сценарию: на расстоянии r0..r1 клеток от центра экрана и
+     непременно за краем стартового обзора. Капсула — так, чтобы при самом
+     сильном отдалении она попадала в поле зрения. */
+  function spawnNear(type, r0, r1, onum) {
+    var c = F.camCell, cs = 54;
+    var cx = c.x + vw / F.CELL / 2, cy = c.y + (vh - 110) / F.CELL / 2;
+    var hx = vw / cs / 2 + 3, hy = (vh - 110) / cs / 2 + 2;
+    for (var i = 0; i < 30; i++) {
+      var ang = Math.random() * Math.PI * 2, r = r0 + Math.random() * (r1 - r0);
+      var dx = Math.cos(ang) * r, dy = Math.sin(ang) * r * 0.55;
+      if (Math.abs(dx) < hx && Math.abs(dy) < hy) continue;
+      var o = objSpec(type, onum);
+      o.x = cx + dx; o.y = cy + dy;
+      if (F.placeObject(o)) return true;
+    }
+    return false;
   }
 
   function stepFlying(dt) {
@@ -377,7 +444,7 @@
         var wx = (gx + (tryN ? Math.round((Math.random() - 0.5) * 6) : 0) + F.W) % F.W;
         var wy = (gy + (tryN ? Math.round((Math.random() - 0.5) * 6) : 0) + F.H) % F.H;
         var key = F.ckey(wx, wy);
-        if (avoid[key] || F.isSpecial(wx, wy)) continue;
+        if (avoid[key] || F.isSpecial(wx, wy) || F.objAt(wx, wy)) continue;
         avoid[key] = 1;
         got = { wx: wx, wy: wy };
       }
@@ -820,6 +887,7 @@
         var qx = (cand.ox + xx + F.W) % F.W, qy = (cand.oy + yy + F.H) % F.H;
         // пустота на доске подвижна и мешает мало, прочие особые знаки — стены
         if (F.isSpecial(qx, qy)) sp += F.isVoidCell(qx, qy) ? 0.25 : 1;
+        if (F.objAt(qx, qy)) sp += 50;
       }
       if (sp < bestSp) { bestSp = sp; reg = cand; }
       if (!sp) break;
@@ -1441,7 +1509,7 @@
     if (panel === 1) switchPanel(0, true);
     abort();
     closeConsole(true); conHold = null;
-    var D = LORE.creature() === 1 ? EJECT_FIRST : EJECT_NEXT;
+    var D = LORE.firstEject() ? EJECT_FIRST : EJECT_NEXT;
     eject = { t: 0, D: D, reason: reason, door: false, reset: false, panicT: 0, arrival: 0 };
     forced = true;                 // существо перехватывает пульт
     if (reason !== 'drift' && reason !== 'age') S.death();
@@ -1524,8 +1592,15 @@
     lunchDenied = 0; sleepDenied = 0;
     // выброшенное существо уносит с собой всё, что сделало; остаётся только сделанное игроком
     INV.wipe('c');
+    var wasTut = !!tut;
     LORE.newCreature(eject ? eject.reason : 'drift');
     tut = null; age = 0; lifeFlags = {};
+    /* Капсула только что сменённого существа дрейфует неподалёку. После
+       обучения рядом ещё и какой-нибудь астероид, подальше. На четвёртом
+       цикле — один раз за игру — заброшенная станция. */
+    spawnNear('capsule', 18, 24, LORE.ejected());
+    if (wasTut) { var nt = randomNatural(); if (nt) spawnNear(nt, 45, 70); }
+    if (LORE.lives() === 4 && !LORE.flag('strange') && spawnNear('station_strange', 28, 40)) LORE.flag('strange', 1);
     forced = false; humanAt = -1e9; handover = null; cycles = 0;
     /* После выброса полная заставка не повторяется: новое существо садится за
        пульт, и почти сразу его можно забрать. Полная заставка — только при
@@ -1869,6 +1944,7 @@
         F.loadWorld(F.freshWorld({ w: NAV_W, h: NAV_W, seed: (Math.random() * 0xffffff) | 0, zoom: F.zoom }));
         taken.clear(); reveals.clear(); guide = null;
         LORE.ship('relocate');
+        LORE.nextSector();
         c = F.camCell;
       }
       u = Math.min(1, (move.t - T1) / (T2 - T1));
@@ -2533,6 +2609,8 @@
           // на анализе и утилизации существо уводит поле, только когда цель
           // и правда за краем, а не когда просто работает у кромки экрана
           || ((creature.st === 'chain' || creature.st === 'purge' || creature.st === 'console') && creature.panning))));
+    // объекты появляются только на навигационной карте и не у старого существа
+    F.setObjSpawn(panel === 0 && !tut);
     F.update(dt, fieldBlocked ? null : Pointer, vw, vh, allowPan);
 
     var sx = Pointer.x - prevPX, sy = Pointer.y - prevPY;
@@ -2805,6 +2883,7 @@
     }
     resize();
     F.init();
+    F.setObjPicker(objPick);
     F.loadWorld(F.freshWorld({ w: NAV_W, h: NAV_W, seed: 0x5f3a71, zoom: 1 }));
     if (controlAt !== Infinity) scheduleBreaks();
     // память между запусками: лор и хранилище данных
@@ -3001,6 +3080,9 @@
         setDrift: function (v) { drift = v; },
         setAge: function (v) { age = v; },
         oldFx: function () { vbarT = 0; coughT = 0; },
+        spawnObj: function (type, r0, r1, onum) { return spawnNear(type, r0 || 4, r1 || 6, onum); },
+        objects: function () { return F.objects(); },
+        button: function () { return button; },
         oldFxHold: function (k) {
           if (vbar) vbar.dur *= k;
           if (cough) { cough.pat.forEach(function (p) { p.at *= k; p.dur *= k; }); cough.end *= k; }

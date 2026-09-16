@@ -152,7 +152,10 @@
   }
 
   function anchorAt(wx, wy) {
-    var a = cells.get(ckey(wx, wy));
+    var ok = ckey(wx, wy), oa = objAnch.get(ok);
+    if (oa) return consumed.has(oa.pid) ? null : oa;
+    if (objCell.has(ok)) return null;              // внутри объекта якорей нет
+    var a = cells.get(ok);
     if (!a) return null;
     if (a.pid && consumed.has(a.pid)) return null;
     if (isSpecial(wx, wy)) return null;      // особый знак якорем не бывает
@@ -188,6 +191,7 @@
         var wx = wrap(x0 + i, W), wy = wrap(y0 + j, H);
         if (rawGlyph(wx, wy) !== gid) continue;
         if (isSpecial(wx, wy)) continue;
+        if (objCell.has(ckey(wx, wy)) || objAnch.has(ckey(wx, wy))) continue;
         if (avoid && avoid[ckey(wx, wy)]) continue;
         hits.push({ wx: wx, wy: wy,
           d: Math.abs(i - spanW / 2) + Math.abs(j - spanH / 2) + Math.random() * 4 });
@@ -292,6 +296,10 @@
   var glide = null;                // куда плывёт центр камеры, в клетках
   var spin = new Map();            // крутящиеся знаки: сбой на краю собранного блока
   var sortedOf = new Map();        // клетка -> контур разложенной группы, в которую она входит
+  // уникальные объекты: id -> объект; клетка -> id; клетка якоря -> запись якоря; прокатанные участки
+  var objs = new Map(), objCell = new Map(), objAnch = new Map(), objGen = new Set();
+  var objHome = null, objSeq = 1, objSpawn = true, objPicker = null, objT = 0;
+  var OBJ_PID = 900000, CH_W = 26, CH_H = 15;
   var selBoard = false;            // рамка — это доска сортировки: знаки у кромки не отжимать
   var traceFn = null;              // кому сообщать о новых особых знаках: хранилище данных
 
@@ -322,7 +330,8 @@
       t: t, states: states, over: over, spent: spent, glitch: glitch,
       purged: purged, shards: shards, outlines: outlines, voids: voids,
       nodes: nodes, cells: cells, consumed: consumed, behWant: behWant, behAmt: behAmt,
-      shardId: shardId, sortedCells: sortedCells, beacon: beacon, spin: spin, sortedOf: sortedOf
+      shardId: shardId, sortedCells: sortedCells, beacon: beacon, spin: spin, sortedOf: sortedOf,
+      objs: objs, objCell: objCell, objAnch: objAnch, objGen: objGen, objHome: objHome, objSeq: objSeq
     };
   }
 
@@ -338,6 +347,8 @@
     behWant = o.behWant; behAmt = o.behAmt;
     shardId = o.shardId; sortedCells = o.sortedCells; beacon = o.beacon;
     spin = o.spin || new Map(); sortedOf = o.sortedOf || new Map();
+    objs = o.objs || new Map(); objCell = o.objCell || new Map(); objAnch = o.objAnch || new Map();
+    objGen = o.objGen || new Set(); objHome = o.objHome || null; objSeq = o.objSeq || 1; objT = 0;
     marks = null; boost = null; sel = null; glide = null; streak = 0;
   }
 
@@ -351,7 +362,8 @@
       t: 0, states: new Map(), over: new Map(), spent: new Set(), glitch: new Set(),
       purged: new Map(), shards: new Set(), outlines: [], voids: new Map(),
       nodes: new Map(), cells: new Map(), consumed: new Set(), behWant: 1, behAmt: 1,
-      shardId: new Map(), sortedCells: 0, beacon: -1, spin: new Map(), sortedOf: new Map()
+      shardId: new Map(), sortedCells: 0, beacon: -1, spin: new Map(), sortedOf: new Map(),
+      objs: new Map(), objCell: new Map(), objAnch: new Map(), objGen: new Set(), objHome: null, objSeq: 1
     };
   }
 
@@ -367,6 +379,7 @@
       over: mp(o.over), spent: st(o.spent), glitch: st(o.glitch), purged: mp(o.purged),
       shards: st(o.shards), voids: mp(o.voids), consumed: st(o.consumed), shardId: mp(o.shardId),
       spin: mp(o.spin), sortedCells: o.sortedCells,
+      objs: Array.from(o.objs.values()), objGen: st(o.objGen), objHome: o.objHome, objSeq: o.objSeq,
       outlines: o.outlines.map(function (ol) {
         return { c: ol.list.map(function (c) { return [c.wx, c.wy]; }), inv: ol.invId || 0 };
       })
@@ -380,6 +393,8 @@
     o.purged = new Map(j.purged || []); o.shards = new Set(j.shards || []); o.voids = new Map(j.voids || []);
     o.consumed = new Set(j.consumed || []); o.shardId = new Map(j.shardId || []); o.spin = new Map(j.spin || []);
     o.sortedCells = j.sortedCells || 0;
+    o.objGen = new Set(j.objGen || []); o.objHome = j.objHome || null; o.objSeq = j.objSeq || 1;
+    (j.objs || []).forEach(function (ob) { registerObj(o, ob); });
     (j.outlines || []).forEach(function (s) {
       var list = s.c.map(function (p) { return { wx: p[0], wy: p[1] }; }), set = {};
       list.forEach(function (c) { set[c.wx + '|' + c.wy] = 1; });
@@ -388,6 +403,111 @@
       list.forEach(function (c) { o.sortedOf.set(ckey(c.wx, c.wy), ol); });
     });
     return o;
+  }
+
+  /* --- уникальные объекты --------------------------------------------------- */
+  /* Капсулы, станции, астероиды: область одинаковых знаков своей формы и два
+     сбоящих якоря по диагонали вокруг неё, так что рамка между ними берёт
+     весь объект. Клетки объекта не особые — их забирает только сбор этого
+     объекта; чужая рамка, цепочка анализа и доска сортировки их обходят. */
+  function registerObj(w, ob) {
+    w.objs.set(ob.id, ob);
+    ob.cells.forEach(function (c) { w.objCell.set(ckey(c[0], c[1]), ob.id); });
+    var pid = OBJ_PID + ob.id;
+    w.objAnch.set(ckey(ob.a[0], ob.a[1]), { gid: ob.gid, kind: 0, pid: pid, role: 1, mate: { x: ob.b[0], y: ob.b[1] }, obj: ob.id });
+    w.objAnch.set(ckey(ob.b[0], ob.b[1]), { gid: ob.gid, kind: 0, pid: pid, role: 2, mate: { x: ob.a[0], y: ob.a[1] }, obj: ob.id });
+  }
+
+  function areaFree(x0, y0, w, h) {
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
+      var wx = wrap(x0 + x, W), wy = wrap(y0 + y, H), k = ckey(wx, wy);
+      if (isSpecial(wx, wy) || over.has(k) || objCell.has(k) || objAnch.has(k) || sortedOf.has(k) || spent.has(k)) return false;
+    }
+    return true;
+  }
+
+  function objGlyph() {
+    for (var i = 0; i < 40; i++) {
+      var g = 1 + Math.floor(Math.random() * (G.COUNT - 1));
+      if (!G.isParasite(g)) return g;
+    }
+    return 1;
+  }
+
+  /* o: { type, cls, rows, onum, x, y } — x, y: желаемый центр в клетках. */
+  function placeObject(o) {
+    var rows = o.rows, w = rows[0].length, h = rows.length;
+    for (var tryN = 0; tryN < 40; tryN++) {
+      var ox = Math.round(o.x - w / 2) + (tryN ? Math.round((Math.random() - 0.5) * 12) : 0);
+      var oy = Math.round(o.y - h / 2) + (tryN ? Math.round((Math.random() - 0.5) * 8) : 0);
+      if (!areaFree(ox - 1, oy - 1, w + 2, h + 2)) continue;
+      var flip = Math.random() < 0.5, gid = objGlyph(), cl = [];
+      rows.forEach(function (r, y) {
+        for (var x = 0; x < w; x++) if (r.charAt(x) === 'x') cl.push([wrap(ox + x, W), wrap(oy + y, H)]);
+      });
+      var ob = {
+        id: objSeq++, type: o.type, cls: o.cls, gid: gid, onum: o.onum || 0, cells: cl,
+        a: [wrap(flip ? ox + w : ox - 1, W), wrap(oy - 1, H)],
+        b: [wrap(flip ? ox - 1 : ox + w, W), wrap(oy + h, H)]
+      };
+      cl.forEach(function (c) { over.set(ckey(c[0], c[1]), gid); });
+      over.set(ckey(ob.a[0], ob.a[1]), gid);
+      over.set(ckey(ob.b[0], ob.b[1]), gid);
+      registerObj({ objs: objs, objCell: objCell, objAnch: objAnch }, ob);
+      return ob;
+    }
+    return null;
+  }
+
+  /* Объект собран: его клетки больше не охраняются, пара якорей отработана. */
+  function takeObject(id) {
+    var ob = objs.get(id);
+    if (!ob) return null;
+    objs.delete(id);
+    ob.cells.forEach(function (c) { objCell.delete(ckey(c[0], c[1])); });
+    consumed.add(OBJ_PID + id);
+    return ob;
+  }
+
+  function objAt(wx, wy) {
+    var k = ckey(wx, wy), id = objCell.get(k);
+    if (id !== undefined) return id;
+    var oa = objAnch.get(k);
+    return oa && !consumed.has(oa.pid) ? oa.obj : 0;
+  }
+
+  /* Объекты появляются по участкам размером примерно в экран, заранее, пока
+     участок ещё за краем. Стартовый участок и соседние пусты: на первых
+     экранах игрок занят журналом. Дальше на участке чаще всего один объект,
+     иногда ни одного и совсем редко два. */
+  function stepObjects(dt, vw, vh) {
+    objT -= dt;
+    if (objT > 0) return;
+    objT = 0.5;
+    var KX = Math.ceil(W / CH_W), KY = Math.ceil(H / CH_H);
+    if (!objHome) objHome = { x: Math.floor((camCX + vw / CELL / 2) / CH_W) % KX, y: Math.floor((camCY + vh / CELL / 2) / CH_H) % KY };
+    var vx0 = Math.floor(camCX / CH_W), vx1 = Math.floor((camCX + vw / CELL) / CH_W);
+    var vy0 = Math.floor(camCY / CH_H), vy1 = Math.floor((camCY + vh / CELL) / CH_H);
+    for (var ky = vy0 - 1; ky <= vy1 + 1; ky++) {
+      for (var kx = vx0 - 1; kx <= vx1 + 1; kx++) {
+        var cx = ((kx % KX) + KX) % KX, cy = ((ky % KY) + KY) % KY, key = cx * 1000 + cy;
+        if (objGen.has(key)) continue;
+        objGen.add(key);
+        var inView = kx >= vx0 && kx <= vx1 && ky >= vy0 && ky <= vy1;
+        if (!objSpawn || !objPicker || inView) continue;
+        var dx = Math.abs(cx - objHome.x), dy = Math.abs(cy - objHome.y);
+        dx = Math.min(dx, KX - dx); dy = Math.min(dy, KY - dy);
+        if (Math.max(dx, dy) < 2) continue;
+        var r = Math.random(), n = r < 0.3 ? 0 : r < 0.97 ? 1 : 2;
+        for (var i = 0; i < n; i++) {
+          var o = objPicker();
+          if (!o) break;
+          o.x = cx * CH_W + 3 + Math.random() * (CH_W - 6);
+          o.y = cy * CH_H + 3 + Math.random() * (CH_H - 6);
+          placeObject(o);
+        }
+      }
+    }
   }
 
   /* Заполненность карты следами работы: пустота, утилизированное, осколки,
@@ -532,6 +652,7 @@
       zoomWant = keep;
     }
     edgePan(cursor, vw, vh, dt, allowPan);
+    stepObjects(dt, vw, vh);
     // дрейф замирает вместе с полем, а прокрутка краем работает всегда:
     // материал этапа может лежать за экраном, и до него надо доехать
     camCX = wrap(camCX + (driftVX * live + panVX) * dt / CELL, W);
@@ -615,12 +736,24 @@
           if (!vs) continue;                       // место ещё пустое
         }
 
-        var sx = (gx - camCX) * CELL + CELL / 2 + jitterX(wx, wy);
-        var sy = (gy - camCY) * CELL + CELL / 2 + jitterY(wx, wy);
+        // клетки уникального объекта стоят ровно по сетке: форма читается целиком
+        var isObj = objCell.has(key);
+        var sx = (gx - camCX) * CELL + CELL / 2 + (isObj ? 0 : jitterX(wx, wy));
+        var sy = (gy - camCY) * CELL + CELL / 2 + (isObj ? 0 : jitterY(wx, wy));
 
         var anc = vd ? null : anchorAt(wx, wy);
         var id = anc ? anc.gid : (G.hash3(wx, wy, SEED) % G.COUNT);
         if (over && over.has(key)) id = over.get(key);
+        // якорь уникального объекта раз в несколько секунд сбоит: на миг это другой знак
+        var objGl = 0;
+        if (anc && anc.obj) {
+          var gcy = 5 + (anc.pid % 7) * 0.45, gph = (t + anc.pid * 1.37) % gcy;
+          if (gph < 0.26) {
+            objGl = 1;
+            id = (anc.gid + 23 + (Math.floor(t * 18) % 4) * 41) % G.COUNT;
+            if (id === VOID_GID) id = 1;
+          }
+        }
 
         /* И фаза, и ПЕРИОД качания берутся из гладкого шума. Связной была
            только фаза, а период оставался случайным на клетку: соседи
@@ -651,6 +784,7 @@
         var rot = Math.sin(bt * rt * 2 * Math.PI * 0.11 + ph) * 0.125
                 * out.rot * breathDamp;
 
+        if (isObj) { ox = 0; oy = 0; rot = 0; }
         if (mk) {
           if (mk.id !== undefined) id = mk.id;
           if (mk.hide) continue;
@@ -718,10 +852,11 @@
 
         var dim = 0.62 + G.rand3(wx, wy, SEED + 3) * 0.38;
         var bo = boost ? (boost.get(key) || 0) : 0;
+        if (isObj) bo += 0.14;
 
         /* Глюк-якорь дрожит быстро и мелко и мерцает не в такт ничему. Он
            обязан читаться как сбой, а не как повадка. */
-        var gl = glitch.has(key) ? 1 : 0;
+        var gl = (glitch.has(key) || objGl) ? 1 : 0;
         if (gl) {
           px += Math.sin(t * 41 + key) * 2.6 * zs;
           py += Math.cos(t * 37 + key * 1.7) * 1.8 * zs;
@@ -1042,6 +1177,10 @@
     setZoom: setZoom, consume: consume,
     saveWorld: saveWorld, loadWorld: loadWorld, freshWorld: freshWorld,
     worldToJSON: worldToJSON, worldFromJSON: worldFromJSON,
+    placeObject: placeObject, takeObject: takeObject, objAt: objAt,
+    setObjSpawn: function (on) { objSpawn = !!on; },
+    setObjPicker: function (fn) { objPicker = fn; },
+    objects: function () { return Array.from(objs.values()); },
     fill: fill, voidNear: voidNear, voidsOnScreen: voidsOnScreen, cellNear: cellNear,
     isVoidCell: isVoidCell,
     isSorted: function (wx, wy) { return sortedOf.has(ckey(wx, wy)); },

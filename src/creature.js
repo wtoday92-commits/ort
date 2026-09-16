@@ -710,6 +710,8 @@
     if (this.eligT !== undefined && api.time() - this.eligT < 0.2) return this.eligCache;
     this.eligT = api.time();
     this.eligCache = api.anchors(REAL).filter(function (a) {
+      // уникальные объекты существо не трогает: для корабля это не работа
+      if (a.rec.obj) return false;
       if (self.rejected[key(a)]) return false;
       var m = a.rec.mate;
       if (!m) return false;
