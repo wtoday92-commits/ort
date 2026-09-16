@@ -147,6 +147,9 @@
     death_hunger: ['creature', 'ends', 'because', 'hunger', 'capsule', 'replaces', 'previous', 'creature'],
     death_sleep: ['creature', 'ends', 'because', 'sleep', 'capsule', 'replaces', 'previous', 'creature'],
     eject: ['creature', 'until_unneeded', 'ship', 'leaves', 'creature', 'outside', 'capsule', 'next'],
+    // существо доработало свой цикл: штатная утилизация по износу
+    eject_age: ['creature', 'until_unneeded', 'capsule', 'replaces', 'previous', 'creature'],
+    aging: ['creature', 'slows', 'usual'],
     eject_pattern: ['defect', 'fills', 'creature', 'again', 'same_as', 'previous', 'creature', 'strange'],
     defect_rising: ['creature', 'slows', 'usual'],
     defect_high: ['defect', 'inside', 'creature'],
@@ -163,10 +166,10 @@
     {
       id: 'log1', color: 'white', at: [-4, -2], w: 8, h: 3,
       sentences: [
-        { text: ['КОРАБЛЬ', '⟨продолжается-как-назначено⟩', 'ПОРЯДОК', '⟨без-отклонения⟩'], key: ['КО', 'РАБЛЬ'] },
-        { text: ['СУЩЕСТВО', '⟨заступает-как-инструмент⟩', '⟨внутри⟩', 'ПУЛЬТ'], key: ['СУ', 'ЩЕС', 'ТВО'] },
-        { text: ['НОМЕР', '#creature', '⟨то-что-отличает-от-прежних⟩'], key: ['НО', 'МЕР'] },
-        { text: ['ИЗЪЯН', '⟨не-найден⟩', '⟨и-поэтому-не⟩', 'ТРЕВОГА'], key: null }
+        { text: ['СУЩЕСТВО', '#ejected', '⟨завершило⟩', 'ЦИКЛ'], key: ['ЦИКЛ'] },
+        { text: ['ЗАМЕНА', '⟨по⟩', 'РАСПИСАНИЕ'], key: ['ЗА', 'МЕ', 'НА'] },
+        { text: ['КАПСУЛА', '#creature', '⟨принята-за⟩', 'ПУЛЬТ'], key: ['КАП', 'СУ', 'ЛА'] },
+        { text: ['ПОРЯДОК', '⟨продолжается-как-назначено⟩'], key: null }
       ],
       extra: ['ТАН']
     },

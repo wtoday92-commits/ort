@@ -107,10 +107,12 @@
 
   Creature.prototype.step = function (dt) {
     var api = this.api, h = this.hand, v = api.view(), self = this;
-    this.timer -= dt;
+    // старое существо думает медленнее: все его паузы и поиски тянутся дольше
+    this.timer -= dt * (1 - 0.4 * api.oldness());
     /* Между нажатиями по кнопкам и сосудам всегда есть пауза. Без неё
        существо, попав на этап без работы, щёлкало по сосудам без остановки. */
     this.tapCd = Math.max(0, (this.tapCd || 0) - dt);
+    this.zoomCd = Math.max(0, (this.zoomCd || 0) - dt);
     this.panning = false;          // выставит steer, если цель за краем
 
     if (this.st !== 'toPhase' && this.st !== 'resume') {
@@ -385,7 +387,7 @@
            похожий знак, проверяет его выдержкой, не получает отклика и только
            потом идёт к настоящему. */
         this.plan = [];
-        if (decoys.length && chance(0.25)) this.plan.push(this.pick(decoys, false));
+        if (decoys.length && chance(0.25 + 0.35 * api.oldness())) this.plan.push(this.pick(decoys, false));
         this.plan.push(mate);
         this.st = 'hunt'; this.sub = 'next'; this.timer = 0;
         break;
@@ -452,6 +454,7 @@
            по дороге случайно смыкался, подсказка обнулялась, существо уходило
            к кнопке НЕ ОТПУСТИВ знак и продолжало таскать им всю доску. */
         if (this.sub === 'carry') {
+          if (api.sortHeld() < 0) { this.tgt = null; this.sub = 'weigh'; this.timer = rnd(0.2, 0.5); return; }
           if (!this.tgt) {
             api.sortDrop();
             this.sub = 'weigh'; this.timer = rnd(0.2, 0.6);
@@ -493,20 +496,36 @@
         }
 
         if (this.sub === 'go') {
-          h.retarget(hn.from.x, hn.from.y);
-          if (h.arrived(15) || this.timer <= 0) {
-            api.sortPick(h.x, h.y);
-            // цель запоминается в момент захвата: доска перетекает под грузом,
-            // и пересчитывать её на ходу нельзя
-            this.tgt = { x: hn.to.x, y: hn.to.y };
-            h.to(this.tgt.x, this.tgt.y, { speed: rnd(200, 330) });
-            this.sub = 'carry'; this.timer = rnd(2.4, 4.2);
+          var ax = hn.from.x + (this.aimOff ? this.aimOff.x : 0), ay = hn.from.y + (this.aimOff ? this.aimOff.y : 0);
+          h.retarget(ax, ay);
+          /* Берёт только когда рука и правда стоит на знаке. Раньше по
+             истечении времени хватало то, что под курсором, и на мелкой
+             клетке это часто был сосед. */
+          var tol = Math.max(4, Math.min(15, api.cell() * 0.28));
+          if (!h.arrived(tol)) {
+            if (this.timer <= 0) { h.to(ax, ay, { speed: rnd(200, 320) }); this.timer = rnd(1.0, 1.8); }
+            return;
           }
+          // взяли не тот знак — сразу кладём обратно и смотрим заново
+          if (!api.sortPick(ax, ay) || api.sortHeld() !== hn.src) {
+            this.aimOff = null;
+            if (api.sortHeld() >= 0) api.sortDrop();
+            this.sub = 'weigh'; this.timer = rnd(0.3, 0.7);
+            return;
+          }
+          // цель запоминается в момент захвата: доска перетекает под грузом,
+          // и пересчитывать её на ходу нельзя
+          this.tgt = { x: hn.to.x, y: hn.to.y };
+          h.to(this.tgt.x, this.tgt.y, { speed: rnd(200, 330) });
+          this.sub = 'carry'; this.timer = rnd(2.4, 4.2);
           return;
         }
 
         h.relook(h.x, h.y);
         if (this.timer <= 0) {
+          // старое существо иногда целится мимо и хватает соседа
+          var cc = api.cell();
+          this.aimOff = chance(0.35 * api.oldness()) ? { x: rnd(-1, 1) * cc * 0.9, y: rnd(-1, 1) * cc * 0.9 } : null;
           h.to(hn.from.x, hn.from.y, { speed: rnd(300, 560) });
           this.sub = 'go'; this.timer = rnd(1.0, 2.4);
         }
@@ -597,6 +616,15 @@
       case 'toPhase': {
         var fp = api.folderPos(this.want);
         h.retarget(fp.x, fp.y - 30);
+        /* Перед точной работой — анализом, сортировкой, утилизацией —
+           существо приближает карту колесом, как сделал бы игрок. На
+           отдалённом поле клетки мелкие, и рука хватала не те знаки.
+           Приближать надо ДО входа в этап: доска сортировки ложится в
+           пределах видимого поля. */
+        if (this.want >= 1 && api.zoom() < 0.9) {
+          if (this.zoomCd <= 0) { api.zoomBy(1); this.zoomCd = rnd(0.22, 0.4); }
+          return;
+        }
         // Этап переключается ТОЛЬКО по приходу к сосуду. Раньше срабатывал и
         // таймер, а он был коротким, поэтому этапы менялись сами собой,
         // где-то на полпути, и жеста нажатия было не видно.
@@ -614,6 +642,7 @@
       case 'chain': {
         var nd = api.chainNext();
         if (!nd) {                       // цепочек больше нет, возвращаемся к сбору
+          this.slip = null;
           // цепочек больше нет: идём туда, где работа ждёт
           this.want = api.needPhase();
           this.st = 'toPhase'; this.sub = 'go'; this.timer = rnd(2.6, 4.4);
@@ -626,11 +655,15 @@
         if (this.sub === 'weigh') {
           h.relook(h.x, h.y);
           if (this.timer <= 0) {
+            // старое существо сбивается: тянется не к тому узлу
+            this.slip = api.slipTarget();
+            if (this.slip) np = api.screenOf(this.slip.wx, this.slip.wy);
             h.to(np.x, np.y, { speed: rnd(200, 470) });
             this.sub = 'move'; this.timer = rnd(1.8, 4.2);
           }
           return;
         }
+        if (this.slip) np = api.screenOf(this.slip.wx, this.slip.wy);
         if (this.sub === 'move') {
           if (this.steer(np)) { this.timer = Math.max(this.timer, 1.2); return; }
           h.retarget(np.x, np.y);
@@ -652,6 +685,14 @@
         h.retarget(np.x, np.y);
         if (!h.arrived(6)) { if (this.timer <= 0) { h.to(np.x, np.y, { speed: 160 }); this.timer = 1.5; } return; }
         {
+          if (this.slip) {
+            // нажало не тот узел: ошибка, и цепочку приходится начинать заново
+            api.slipAt(this.slip);
+            this.slip = null;
+            h.inspect(h.x, h.y, rnd(10, 20));
+            this.sub = 'weigh'; this.timer = rnd(1.4, 2.6);
+            break;
+          }
           api.analyzePick(h.x, h.y);
           // внутри цепочки существо идёт увереннее: путь ему уже показан
           this.sub = 'weigh'; this.timer = rnd(0.15, 0.6);
@@ -705,13 +746,14 @@
         var w = this.waved[k];
         if (w !== undefined && now - w > 0.25 && now - w < 1.8) rate = 2.4;
       }
+      rate *= 1 - 0.55 * api.oldness();             // старое существо замечает хуже
       if (rate && Math.random() < 1 - Math.exp(-rate * stepT)) {
         if (!best || d < best.d) best = { a: a, d: d };
       }
     }
     if (best) return best.a;
     // совсем редко обознаётся: что-то почудилось
-    if (Math.random() < 0.012 * stepT) {
+    if (Math.random() < 0.012 * (1 + 3 * api.oldness()) * stepT) {
       return { blank: true, falseSeen: true,
                x: Math.max(80, Math.min(v.w - 80, h.x + rnd(-280, 280))),
                y: Math.max(110, Math.min(v.h - 160, h.y + rnd(-200, 200))) };

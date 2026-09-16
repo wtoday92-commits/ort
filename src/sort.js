@@ -637,7 +637,7 @@
         if (d < sd) { sd = d; src = i; }
       }
       if (src < 0) continue;
-      return { from: cellScreen(src % BW, (src / BW) | 0), to: cellScreen(bx, by) };
+      return { src: src, from: cellScreen(src % BW, (src / BW) | 0), to: cellScreen(bx, by) };
     }
     return null;
   }

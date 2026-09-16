@@ -31,6 +31,9 @@
   var SLEEP_EVERY = qnum('sleep', 120 * 60), SLEEP_DUR = qnum('sleepdur', 120), SLEEP_RETRY = qnum('sleepretry', 24 * 60);
   var LORE_IDLE = qnum('loreidle', 180);        // сколько игрок может молчать в лорной вкладке, прежде чем существо вернётся к работе
   var LUNCH_DEATH = 5, SLEEP_DEATH = 3;
+  var LIFE = qnum('life', 10 * 3600);          // сколько работает существо, пока его не утилизируют по износу, с
+  var TUT_CYCLES = 3;                          // старое существо: столько кругов игрок должен закрыть сам
+  var TUT_PLAY = qnum('tutplay', 330), TUT_MIN = qnum('tutmin', 240), TUT_GRACE = 40;
   var SPIN_P = qnum('spin', 0.03);             // как часто край собранного блока занимает крутящийся знак       // столько отказов подряд существо не переживёт
   var TOL = 33;                 // на сколько пикселей можно промахнуться по якорю
 
@@ -130,7 +133,12 @@
   var pulses = [];               // отклик на захват
   var chains = [];               // цепочки этапа анализа
   var marks = new Map();         // накладка на поле: узлы цепочек
-  var errors = 0;                // ошибки анализа: сырьё для расшифровки
+  var errors = 0;                // промахи анализа
+  var runErr = [false, false, false, false];   // была ли ошибка в текущем заходе этапа
+  var runDots = [0, 0, 0, 0];                   // сколько серых точек заход уже отдал в лор
+  var runDone = [[], [], [], []];               // единицы, закончившие этап в этом заходе
+  var slips = 0, lastSplits = 0;
+  var age = 0, tut = null, lifeFlags = {};      // возраст существа; обучение со старым существом
   var trains = [];               // связки, уходящие в сосуд на нитке
   var CHAIN_MISS = 3;            // столько промахов, и цепочка распускается
   var prevPX = 0, prevPY = 0, cursorSpd = 0, dwellSnd = 0;
@@ -291,8 +299,8 @@
     }
     sel = SEL.SEND;
     button = null;
-    // errTok — право единицы на половину ошибки анализа: две единицы дают одну ошибку
-    stock.push({ gid: startAnchor ? startAnchor.rec.gid : 0, stage: 0, chain: null, map: mapId, errTok: 0.5 });
+    // bad[этап] — единица вышла из этого этапа с ошибкой: в папке она серая
+    stock.push({ gid: startAnchor ? startAnchor.rec.gid : 0, kind: startAnchor ? startAnchor.rec.kind : 0, stage: 0, chain: null, map: mapId, bad: {} });
     // знаки пустоты, образовавшиеся на сборе, уходят в хранилище числом
     INV.addVoids(humanActive() ? 'p' : 'c', snap.length);
     syncFolders();
@@ -379,7 +387,43 @@
     return nodes.length >= 3 ? nodes : null;
   }
 
+  /* Заход этапа: один анализ, одна доска сортировки, одна доска утилизации.
+     Ошибка в заходе — серая ячейка за КАЖДУЮ единицу, которую этот заход
+     выпустит, и одна серая точка в лорную вкладку (за сомкнувшиеся группы на
+     сортировке — две). Сколько бы ошибок ни было дальше, точка одна. Единица,
+     уже отдавшая точку на этом этапе, при повторном заходе даёт серую ячейку,
+     но точки больше не даёт. Без ошибок — белая ячейка и ничего больше.
+     Для игрока это выглядит как награда за ошибку; для корабля — это работа,
+     которая идёт всё хуже. */
+  function stageRun(st) { runErr[st] = false; runDots[st] = 0; runDone[st] = []; }
+  function stageUnits(st) {
+    if (st === PHASE.ANALYZE) return chains.map(function (c) { return c.unit; });
+    return st === PHASE.SORT ? sortUnits : st === PHASE.PURGE ? purgeUnits : [];
+  }
+  function stageDone(st, u) {
+    u.bad = u.bad || {};
+    u.bad[st] = runErr[st];
+    runDone[st].push(u);
+  }
+  function stageError(st, x, y, dots) {
+    if (!runErr[st]) {
+      runErr[st] = true;
+      runDone[st].forEach(function (u) { u.bad = u.bad || {}; u.bad[st] = true; });
+    }
+    var give = (dots || 1) - runDots[st];
+    if (give <= 0) return;
+    var us = stageUnits(st);
+    if (us.length && us.every(function (u) { return u.dotted && u.dotted[st]; })) return;
+    runDots[st] += give;
+    us.forEach(function (u) { u.dotted = u.dotted || {}; u.dotted[st] = true; });
+    LORE.credit(give);
+    for (var i = 0; i < give; i++) spawnErrDots(x + i * 12, y);
+    S.error();
+  }
+
   function buildChains() {
+    stageRun(PHASE.ANALYZE);
+    slips = 0;
     chains = [];
     var pend = unitsAt(0);
     for (var i = 0; i < Math.min(4, pend.length); i++) {
@@ -643,6 +687,7 @@
     var ch = chains[ci];
     ch.done = true;
     ch.unit.stage = 1;
+    stageDone(PHASE.ANALYZE, ch.unit);
     syncFolders();
     /* Знаки с поля не исчезают: они оседают вдвое и блёкнут, потому что из них
        уже всё взято. В папку улетают не они, а ЭССЕНЦИЯ — светящиеся точки на
@@ -655,8 +700,8 @@
     launchTrain(ch.nodes, PHASE.ANALYZE, null, true);
     // оба конца цепочки — знаки-якоря, прошедшие анализ: в хранилище
     var byMe = humanActive() ? 'p' : 'c';
-    INV.add({ k: 'glyph', g: ch.unit.gid, by: byMe });
-    INV.add({ k: 'glyph', g: ch.unit.gid, by: byMe });
+    INV.add({ k: 'glyph', g: ch.unit.gid, kind: ch.unit.kind, by: byMe });
+    INV.add({ k: 'glyph', g: ch.unit.gid, kind: ch.unit.kind, by: byMe });
     act(PHASE.ANALYZE);
     var left = chains.filter(function (q) { return !q.done; });
     if (!left.length) {
@@ -665,20 +710,31 @@
     }
   }
 
-  /* Ошибок за этап не больше, чем по одной на две собранные единицы: шесть
-     единиц — три ошибки. Право на ошибку хранится в самих единицах, поэтому
-     ни перезапуск этапа, ни промахи без счёта его не пополняют. */
-  function takeErrToken() {
-    var pend = unitsAt(0), sum = 0, i;
-    for (i = 0; i < pend.length; i++) sum += pend[i].errTok || 0;
-    if (sum < 0.999) return false;
-    var need = 1;
-    for (i = 0; i < pend.length && need > 1e-9; i++) {
-      var take = Math.min(pend[i].errTok || 0, need);
-      pend[i].errTok = (pend[i].errTok || 0) - take;
-      need -= take;
-    }
-    return true;
+  /* Старое существо на анализе иногда сбивается: тянется к чужому узлу,
+     получает ошибку и начинает цепочку заново. Не больше двух раз за анализ.
+     В самом первом показе оно ошибается обязательно, один раз: так игрок
+     видит, как ошибка улетает серой точкой. */
+  function curChain() {
+    for (var i = 0; i < chains.length; i++) if (!chains[i].done && chains[i].at < chains[i].nodes.length) return chains[i];
+    return null;
+  }
+  function slipTarget() {
+    var c = curChain();
+    if (!c || slips >= 2) return null;
+    var must = !!(tut && !tut.anaErr && controlAt === Infinity && c.at >= 1);
+    if (!must && !(Math.random() < 0.1 * oldness())) return null;
+    var wi = c.at + 1 < c.nodes.length ? c.at + 1 : c.at - 1;
+    if (wi < 0) return null;
+    return { c: c, wx: c.nodes[wi].wx, wy: c.nodes[wi].wy };
+  }
+  function slipAt(sl) {
+    if (!sl || sl.c.done) return;
+    slips++;
+    if (tut) tut.anaErr = true;
+    var p = F.cellCenter(sl.wx, sl.wy);
+    analyzePick(p.x, p.y);
+    sl.c.at = 0; sl.c.miss = 0;
+    S.unravel();
   }
 
   function analyzePick(x, y) {
@@ -692,12 +748,10 @@
       if (ch.at >= ch.nodes.length) completeChain(h.ci);
       return;
     }
-    // промах по узлу. В мешанине из нескольких цепочек это ошибка, а не провал
-    var open = chains.filter(function (q) { return !q.done; }).length;
-    // ошибка уходит в лорную сортировку: только так лор и кормится
-    // промах — это промах: звук отказа звучит всегда, ошибка лишь добавляет серую точку
-    if (open > 1 && takeErrToken()) { errors++; S.reject(); S.error(); reject = 1; LORE.credit(1); ch.unit.err = true; spawnErrDots(x, y); }
-    else { S.reject(); reject = 1; }
+    // промах по узлу — ошибка этапа
+    errors++;
+    S.reject(); reject = 1;
+    stageError(PHASE.ANALYZE, x, y, 1);
 
     /* Перебором цепочку не взять. Три промаха, и она распускается целиком:
        иначе можно было бы просто тыкать во все узлы подряд, пока не попадёшь,
@@ -726,6 +780,7 @@
     var pend = unitsAt(1);
     sortUnits = [];
     if (!pend.length) return;
+    stageRun(PHASE.SORT);
 
     /* Берём место на карте, где нужное начертание уже есть хоть в каком-то
        числе, а недостающие дубли прилетают из папки. Требовать, чтобы вся
@@ -854,10 +909,15 @@
   }
 
   function sortSettle() {
+    var rc = SZ.rect();
     SZ.commit();
     var r = sortRes; sortRes = null;
     phase = PHASE.NONE;                 // этап отработал, возвращаемся в свободный режим
     if (!r) return;
+
+    // собрано не всё или группы сомкнулись — ошибка этапа; сомкнувшиеся дают две точки
+    var failed = !!r.glitches || (r.groups || []).some(function (g) { return !g.done; });
+    if (failed) stageError(PHASE.SORT, rc ? (rc.x0 + rc.x1) / 2 : vw / 2, rc ? rc.y0 + 20 : vh / 2, r.glitches ? 2 : 1);
 
     // одна собранная без глюков группа — одна единица, ровно та цепочка,
     // что пришла с анализа
@@ -865,7 +925,7 @@
     for (var u = 0; u < sortUnits.length; u++) {
       var gr = null;
       for (var q = 0; q < (r.groups || []).length; q++) if (r.groups[q].id === sortUnits[u].gid) gr = r.groups[q];
-      if (gr && gr.done) { sortUnits[u].stage = 2; sortUnits[u].sortWant = null; got++; }
+      if (gr && gr.done) { sortUnits[u].stage = 2; sortUnits[u].sortWant = null; stageDone(PHASE.SORT, sortUnits[u]); got++; }
       // недособранная: запомнить остаток, повтор будет ровно на него
       else if (gr) sortUnits[u].sortWant = Math.max(2, gr.need - gr.got + 1);
     }
@@ -920,6 +980,8 @@
     var pend = unitsAt(2);
     purgeUnits = [];
     if (!pend.length) return;
+    stageRun(PHASE.PURGE);
+    lastSplits = 0;
     // папка утилизации полна: сперва её надо опустошить кнопкой
     if (unitsAt(3).length >= FOLDER_CAP) { S.reject(); reject = 0.6; phase = PHASE.NONE; return; }
     var cells = [];
@@ -960,11 +1022,14 @@
     }
     if (phase !== PHASE.PURGE || !PG.built()) return;
     PG.step(dt);
-    if (PG.progress().frac < 1) return;
+    var prs = PG.progress();
+    // передержанный знак расщепился — ошибка этапа
+    if ((prs.splits || 0) > lastSplits) { lastSplits = prs.splits; stageError(PHASE.PURGE, Pointer.x, Pointer.y, 1); }
+    if (prs.frac < 1) return;
 
     var r = PG.progress();
     PG.commit();
-    for (var u = 0; u < purgeUnits.length; u++) purgeUnits[u].stage = 3;
+    for (var u = 0; u < purgeUnits.length; u++) { purgeUnits[u].stage = 3; stageDone(PHASE.PURGE, purgeUnits[u]); }
     purgeUnits = [];
     syncFolders();
     folderFlare[PHASE.PURGE] = 1;
@@ -1198,6 +1263,8 @@
      заставку: пульт с сильными помехами переходит к игроку. */
   function cycleDone() {
     cycles++;
+    // обучение: считаются только круги, которые игрок закрыл сам
+    if (tut && ctrl() && humanActive()) { tut.cycles++; if (tut.cycles === TUT_CYCLES) tut.t3 = tut.play; }
     if (controlAt === Infinity && !handover && !eject) {
       handover = { t: 0 };
       S.handover();
@@ -1232,7 +1299,7 @@
   var edgePulse = 0, warnT = 0, warnFlags = {};
 
   function stepDefect(dt) {
-    if (eject || !ctrl()) return;
+    if (eject || !ctrl() || tut) return;
     var f = drift / driftMax();
     [[0.6, 'defect_rising'], [0.8, 'defect_high'], [0.95, 'defect_critical']].forEach(function (th) {
       if (f >= th[0] && !warnFlags[th[0]]) { warnFlags[th[0]] = true; LORE.ship(th[1]); }
@@ -1246,6 +1313,115 @@
     tearPulse = Math.max(tearPulse, 0.08 + 0.3 * k);
     shake = Math.max(shake, 0.1 + 0.4 * k);
     S.defectWarn(f);
+  }
+
+  /* Жизнь существа. Каждое существо стареет само: за LIFE (10 часов работы)
+     оно изнашивается, и корабль утилизирует его — штатно, как любое другое.
+     С 70% жизни существо заметно медленнее и ошибается чаще, с 80% до 90%
+     разрушается верхняя панель, после 90% ею пользоваться нельзя. Обычный
+     игрок этого не увидит: ошибки копят шкалу изъяна, и существо уходит
+     намного раньше. Игрок без ошибок существу жизнь не сокращает.
+
+     Первое подключение — к старому существу, доживающему цикл: оно медленное,
+     промахивается, панель разбита. Его утилизируют, когда игрок сам закрыл
+     хотя бы три круга и наиграл около пяти с половиной минут; каждый круг
+     сверх трёх приближает конец на полминуты, но не раньше четырёх минут, и
+     не раньше чем через 40 с после третьего круга. Считается только время,
+     когда играет сам игрок: пока он пьёт чай, старик работает сколько угодно. */
+  function oldness() { return tut ? 1 : Math.max(0, Math.min(1, (age - 0.7 * LIFE) / (0.3 * LIFE))); }
+  function panelDamage() { return tut ? 0.9 : Math.max(0, Math.min(1, (age - 0.8 * LIFE) / (0.1 * LIFE))); }
+  function panelLocked() { return !!tut || age >= 0.9 * LIFE; }
+  function handSlow() { return tut ? (controlAt === Infinity ? 0.7 : 0.5) : 1 - 0.5 * oldness(); }
+
+  function stepLife(dt) {
+    if (eject) return;
+    age += dt;
+    if (panelLocked() && panel === 1) switchPanel(0, true);
+    if (tut) {
+      if (humanActive() && panel === 0) tut.play += dt;
+      if (tut.cycles >= TUT_CYCLES) {
+        var need = Math.max(TUT_MIN, TUT_PLAY - 30 * (tut.cycles - TUT_CYCLES));
+        if (tut.play >= need && tut.play >= tut.t3 + TUT_GRACE) endCycle('age');
+      }
+      return;
+    }
+    if (age >= 0.8 * LIFE && !lifeFlags.aging) { lifeFlags.aging = true; LORE.ship('aging'); }
+    if (age >= LIFE) endCycle('age');
+  }
+
+  /* Старое существо видит и слышит хуже. Раз в ~40 с по экрану проходит
+     вертикальная помеха, как в старом телевизоре; раз в минуту где-то далеко
+     кто-то кашляет, и картинка в такт двоится; весь звук глуше, как через
+     подушку. У обычного существа всё это приходит вместе со старостью. */
+  var vbar = null, vbarT = 25, cough = null, coughT = 45, muffleSet = -1;
+
+  function stepOldFx(dt) {
+    var old = oldness(), m = Math.round(old * 20) / 20;
+    if (m !== muffleSet) { muffleSet = m; S.muffle(m); }
+    if (vbar) { vbar.t += dt; if (vbar.t >= vbar.dur) vbar = null; }
+    if (cough) { cough.t += dt; if (cough.t > cough.end) cough = null; }
+    if (old < 0.05 || eject) return;
+    vbarT -= dt * old;
+    if (vbarT <= 0 && !vbar) {
+      vbarT = 32 + Math.random() * 16;
+      vbar = { t: 0, dur: 0.8 + Math.random() * 0.5, dir: Math.random() < 0.5 ? 1 : -1, w: 40 + Math.random() * 50 };
+      S.crackle(0.6);
+    }
+    coughT -= dt * old;
+    if (coughT <= 0 && !cough) {
+      coughT = 50 + Math.random() * 25;
+      var pat = [], at = 0, n = 2 + Math.floor(Math.random() * 3);
+      for (var i = 0; i < n; i++) {
+        var d = 0.22 + Math.random() * 0.18;
+        pat.push({ at: at, dur: d, k: 1 - i * 0.12 });
+        at += d + 0.08 + Math.random() * 0.28;
+      }
+      cough = { t: 0, pat: pat, end: at + 0.4 };
+      S.cough(pat);
+    }
+  }
+
+  function coughEnv() {
+    if (!cough) return 0;
+    var e = 0;
+    cough.pat.forEach(function (p) {
+      var u = (cough.t - p.at) / p.dur;
+      if (u >= 0 && u <= 1) e = Math.max(e, p.k * (u < 0.1 ? u / 0.1 : Math.pow(1 - u, 1.5)));
+    });
+    return e;
+  }
+
+  function drawOldFx() {
+    var e = coughEnv();
+    if (e > 0.02) {
+      // картинка двоится в такт кашлю
+      ctx.save();
+      ctx.globalAlpha = 0.3 * e;
+      ctx.globalCompositeOperation = 'lighter';
+      var dx = 4 + 6 * e;
+      ctx.drawImage(scene, 0, 0, scene.width, scene.height, dx, dx * 0.3, vw, vh);
+      ctx.restore();
+    }
+    if (!vbar) return;
+    var u = vbar.t / vbar.dur, w = vbar.w, span = vw + w * 2;
+    var x = vbar.dir > 0 ? -w + u * span : vw + w - u * span, x0 = Math.round(x - w / 2);
+    var sx = Math.max(0, Math.min(vw - w, x0));
+    ctx.save();
+    // кусок кадра под полосой съезжает вниз
+    ctx.drawImage(scene, sx * dpr, 0, w * dpr, vh * dpr, x0, 5 + Math.random() * 9, w, vh);
+    ctx.globalCompositeOperation = 'lighter';
+    var g = ctx.createLinearGradient(x0, 0, x0 + w, 0);
+    g.addColorStop(0, 'rgba(255,230,190,0)');
+    g.addColorStop(0.5, 'rgba(255,230,190,0.22)');
+    g.addColorStop(1, 'rgba(255,230,190,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x0, 0, w, vh);
+    ctx.fillStyle = 'rgba(255,240,220,0.32)';
+    for (var i = 0; i < 40; i++) ctx.fillRect(x0 + Math.random() * w, Math.random() * vh, 1 + Math.random() * 2, 4 + Math.random() * 44);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(vbar.dir > 0 ? x0 + w : x0 - 3, 0, 3, vh);
+    ctx.restore();
   }
 
   /* Выброс существа. Долгая сцена: минута в первый раз, дальше по двадцать
@@ -1265,14 +1441,15 @@
     if (panel === 1) switchPanel(0, true);
     abort();
     closeConsole(true); conHold = null;
-    var D = LORE.ejects() === 0 ? EJECT_FIRST : EJECT_NEXT;
+    var D = LORE.creature() === 1 ? EJECT_FIRST : EJECT_NEXT;
     eject = { t: 0, D: D, reason: reason, door: false, reset: false, panicT: 0, arrival: 0 };
     forced = true;                 // существо перехватывает пульт
-    if (reason !== 'drift') S.death();
+    if (reason !== 'drift' && reason !== 'age') S.death();
     S.ejectBegin(D * 0.45);
     /* Первые выбросы для корабля штатны. С пятого — выброс за выбросом — он
        начинает отмечать странность, но причин так и не знает. */
-    LORE.ship(reason === 'drift' ? (LORE.ejects() >= 4 ? 'eject_pattern' : 'eject') : 'death_' + reason);
+    LORE.ship(reason === 'age' ? 'eject_age'
+      : reason === 'drift' ? (LORE.ejects() >= 4 ? 'eject_pattern' : 'eject') : 'death_' + reason);
   }
 
   function stepEject(dt) {
@@ -1347,7 +1524,8 @@
     lunchDenied = 0; sleepDenied = 0;
     // выброшенное существо уносит с собой всё, что сделало; остаётся только сделанное игроком
     INV.wipe('c');
-    LORE.newCreature();
+    LORE.newCreature(eject ? eject.reason : 'drift');
+    tut = null; age = 0; lifeFlags = {};
     forced = false; humanAt = -1e9; handover = null; cycles = 0;
     /* После выброса полная заставка не повторяется: новое существо садится за
        пульт, и почти сразу его можно забрать. Полная заставка — только при
@@ -1895,7 +2073,7 @@
           continue;
         }
         var fresh = (k === f - 1) ? fl : 0;
-        var dark = lv ? !!(lv.dark && lv.dark[i] && lv.dark[i][k]) : !!units[k].err;
+        var dark = lv ? !!(lv.dark && lv.dark[i] && lv.dark[i][k]) : !!(units[k].bad && units[k].bad[i]);
         var sc = 1 + fresh * 0.35;
         if (!lv && i === PHASE.PURGE && purgeDrain > 0 && k === f - 1) sc *= 0.6 + 0.4 * Math.max(0, Math.min(1, purgeDrain / 0.45));
         // последняя единица анализа тает по мере сортировки
@@ -2128,7 +2306,8 @@
   }
 
   function panelHit(x, y) {
-    if (!ctrl()) return -1;
+    // разбитая панель не отзывается
+    if (!ctrl() || panelLocked()) return -1;
     for (var i = 0; i < 4; i++) {
       if (i >= 2 && panel !== 1) continue;
       var p = panelPos(i);
@@ -2138,8 +2317,10 @@
   }
 
   function drawMenu() {
-    var pr = Math.max(0, Math.min(1, (t - controlAt) / 2.2));
+    // у старого существа панель видна сразу, но разбита
+    var pr = tut ? 1 : Math.max(0, Math.min(1, (t - controlAt) / 2.2));
     if (pr <= 0) return;
+    var dmg = panelDamage();
     var e = 1 - Math.pow(1 - pr, 3);
     backdrop(0, 78 * e, -1);
     ctx.save();
@@ -2149,7 +2330,13 @@
       var p = panelPos(i), on = i === panel || (i === 2 && LORE.journalOpen) || (i === 3 && INV.open);
       ctx.save();
       ctx.translate(p.x, -20 + e * (p.y + 20));
-      if (on && i < 2) {
+      if (dmg > 0) {
+        // разрушенная панель: значки дёргаются и пропадают
+        var gs = Math.floor(t * 8) * 7 + i * 13;
+        ctx.translate((G.rand3(gs, i, 71) - 0.5) * 12 * dmg, (G.rand3(gs, i, 72) - 0.5) * 5 * dmg);
+        if (G.rand3(gs, i, 73) < dmg * 0.3) ctx.globalAlpha *= 0.15;
+      }
+      if (on && i < 2 && dmg < 0.5) {
         var bp = 0.5 + 0.5 * Math.sin(t * 1.6);
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
@@ -2167,8 +2354,20 @@
       var fresh = (i === 2 && LORE.fresh) || (i === 3 && INV.fresh) ? 0.5 + 0.5 * Math.sin(t * 3) : 0;
       ctx.strokeStyle = on ? 'rgba(255,232,190,0.95)'
         : 'rgba(255,' + Math.round(150 + fl * 80 + fresh * 60) + ',' + Math.round(46 + fl * 120 + fresh * 90) + ',' + (0.22 + fl * 0.7 + fresh * 0.4) + ')';
+      if (dmg >= 0.5) ctx.strokeStyle = 'rgba(170,132,92,' + (0.75 - 0.25 * dmg).toFixed(2) + ')';
       G.drawGlyph(ctx, [33, 164, 90, 139][i], i >= 2 ? 18 : (on ? 24 : 20), on ? 1.6 : 1.2);
       ctx.restore();
+    }
+    if (dmg > 0) {
+      // рваные полосы помех поперёк панели
+      var gb = Math.floor(t * 6);
+      ctx.globalAlpha = 1;
+      for (var b = 0; b < 4; b++) {
+        if (G.rand3(gb, b, 81) > dmg) continue;
+        ctx.fillStyle = 'rgba(120,96,70,' + (0.3 * dmg).toFixed(2) + ')';
+        ctx.fillRect(vw / 2 - 170 + G.rand3(gb, b, 82) * 240, 22 + G.rand3(gb, b, 83) * 36,
+                     40 + G.rand3(gb, b, 84) * 130, 1 + G.rand3(gb, b, 85) * 2);
+      }
     }
     ctx.restore();
   }
@@ -2237,6 +2436,7 @@
      и без рендера, что нужно и для проверок, и при скрытой странице. */
   function simulate(dt) {
     t += dt;
+    hand.slow = handSlow();
     tearFx = tearPulse;
     tearPulse = Math.max(0, tearPulse - dt * 1.3);
     if (tabFlare > 0) tabFlare = Math.max(0, tabFlare - dt * 0.8);
@@ -2298,7 +2498,9 @@
     stepHandover(dt);
     stepEject(dt);
     stepDefect(dt);
-    if (drift >= driftMax() && !eject) endCycle('drift');
+    if (!tut && drift >= driftMax() && !eject) endCycle('drift');
+    stepLife(dt);
+    stepOldFx(dt);
 
     for (var i = 0; i < 4; i++) {
       if (folderFlare[i] > 0) folderFlare[i] = Math.max(0, folderFlare[i] - dt * 1.6);
@@ -2351,6 +2553,7 @@
   function frame(now) {
     var dt = Math.min(0.05, (now - last) / 1000 || 0.016);
     last = now;
+    lastSimAt = performance.now();
     simulate(dt);
     render();
     requestAnimationFrame(frame);
@@ -2398,6 +2601,7 @@
       ctx.fillRect(0, 0, vw, lh); ctx.fillRect(0, vh - lh, vw, lh);
     }
     if (!(post && post.ok) && tearFx > 0.02) drawTearFallback();
+    drawOldFx();
 
     if (post && post.ok) post.render(scene, t, tearFx, { scale: ejectFx.scale, blur: ejectFx.blur, lids: ejectFx.lids, edge: Math.max(ejectFx.edge, edgePulse), dark: ejectFx.dark });
   }
@@ -2417,7 +2621,12 @@
   }
 
   function bind() {
-    canvas.addEventListener('pointermove', function (e) { pointerIn = true; onMove(e.clientX, e.clientY); });
+    /* Мышь, пролетевшая над окном игры, пока игрок работает в другой
+       программе, пульт не забирает: только когда окно игры в фокусе. */
+    canvas.addEventListener('pointermove', function (e) {
+      pointerIn = true;
+      if (document.hasFocus()) onMove(e.clientX, e.clientY);
+    });
     /* Курсор ушёл из окна: в другую вкладку, другое окно или просто за край.
        Последняя точка остаётся у кромки, и без этого поле прокручивалось бы
        без конца и мешало существу. */
@@ -2567,7 +2776,7 @@
 
   var saveT = 0, navSaveT = 0;
   function persist() {
-    var data = { v: 1, lore: LORE.serialize(), inv: INV.serialize() };
+    var data = { v: 1, lore: LORE.serialize(), inv: INV.serialize(), life: { age: Math.round(age), tut: tut } };
     // навигационная карта тоже помнится: разложенные группы, пустоты, следы
     var nav = panel === 0 ? F.saveWorld() : navWorld;
     if (nav && ctrl()) data.nav = F.worldToJSON(nav);
@@ -2601,6 +2810,9 @@
     // память между запусками: лор и хранилище данных
     var saved = root.Save.load();
     if (saved) { if (saved.lore) LORE.load(saved.lore); if (saved.inv) INV.load(saved.inv); }
+    // первое подключение — к старому существу, доживающему свой цикл
+    if (saved && saved.life) { age = +saved.life.age || 0; tut = saved.life.tut || null; }
+    else if ((!saved && INTRO_FULL) || /[?&]tut\b/.test(location.search)) tut = { play: 0, cycles: 0, t3: 0, anaErr: false };
     if (saved && saved.nav) {
       try { F.loadWorld(F.worldFromJSON(saved.nav)); }
       catch (e) { F.loadWorld(F.freshWorld({ w: NAV_W, h: NAV_W, seed: 0x5f3a71, zoom: 1 })); }
@@ -2673,6 +2885,11 @@
       sortHeldLit: SZ.heldLit,
       sortPick: SZ.pick,
       sortDrop: SZ.drop,
+      sortHeld: function () { var bb = SZ.board(); return bb ? bb.drag : -1; },
+      cell: function () { return F.CELL; },
+      oldness: oldness,
+      slipTarget: slipTarget,
+      slipAt: slipAt,
       sortFinish: sortFinish,
       sortBusy: function () { return SZ.finishing() || SZ.active(); },
       sortButton: function () { return button === sortBtn ? sortBtn : null; },
@@ -2782,6 +2999,14 @@
         relocateNow: function () { MOVE_FILL = 0; },
         endNow: function (r) { endCycle(r || 'drift'); },
         setDrift: function (v) { drift = v; },
+        setAge: function (v) { age = v; },
+        oldFx: function () { vbarT = 0; coughT = 0; },
+        oldFxHold: function (k) {
+          if (vbar) vbar.dur *= k;
+          if (cough) { cough.pat.forEach(function (p) { p.at *= k; p.dur *= k; }); cough.end *= k; }
+        },
+        oldFxState: function () { return { vbar: !!vbar, cough: cough ? cough.pat.length : 0, env: coughEnv() }; },
+        tut: function () { return tut; },
         driftMax: function () { return driftMax(); },
         ejectFx: function () { return ejectFx; },
         state: function () {
@@ -2791,7 +3016,7 @@
             conHold: !!conHold, lunchDue: Math.round(lunchDue - t), sleepDue: Math.round(sleepDue - t),
             lunchDenied: lunchDenied, sleepDenied: sleepDenied,
             move: move ? move.st : null, eject: eject ? eject.reason : null,
-            fill: Math.round(F.fill() * 10000) / 10000, mapId: mapId, cycles: cycles, drift: Math.round(drift * 10) / 10,
+            fill: Math.round(F.fill() * 10000) / 10000, mapId: mapId, cycles: cycles, age: Math.round(age), drift: Math.round(drift * 10) / 10,
             creature: creature.st + '/' + creature.sub
           };
         },
@@ -2833,7 +3058,34 @@
       };
     }
     last = performance.now();
+    startBackground();
     requestAnimationFrame(frame);
+  }
+
+  /* В фоновой вкладке (и в окне, закрытом другими) браузер не зовёт
+     requestAnimationFrame, и мир вставал: звук играл, а существо часами
+     сидело без дела. Поэтому время подгоняет ещё и таймер в отдельном
+     потоке — его браузер почти не душит. Если кадры идут, таймер молчит;
+     если кадров нет дольше 0.4 с, он сам досчитывает прошедшее время.
+     Рисовать в скрытой вкладке незачем, считается только работа. */
+  var lastSimAt = 0;
+  function backgroundTick() {
+    var nowMs = performance.now();
+    if (nowMs - lastSimAt < 400) return;
+    var el = Math.min(300, (nowMs - lastSimAt) / 1000);
+    lastSimAt = nowMs;
+    while (el > 0) { var d = Math.min(0.05, el); simulate(d); el -= d; }
+  }
+  function startBackground() {
+    // вкладка могла открыться сразу в фоне, без единого кадра
+    lastSimAt = performance.now();
+    try {
+      var code = 'setInterval(function () { postMessage(0); }, 250);';
+      var w = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+      w.onmessage = backgroundTick;
+    } catch (e) {
+      setInterval(backgroundTick, 250);
+    }
   }
 
   root.addEventListener('load', start);

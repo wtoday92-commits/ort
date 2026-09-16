@@ -32,6 +32,7 @@
     this.la = rnd(0, 6.28);
     this.lspd = 1;
     this.lr = 20;
+    this.slow = 1;                 // старое существо водит курсор медленнее
   }
 
   /* Новый ход к точке. Кривизна и скорость выбираются заново каждый раз,
@@ -83,14 +84,14 @@
       var rr = this.lr * (0.5 + 0.5 * Math.sin(this.t * 1.6 + this.ph[1]));
       tx = this.look.x + Math.cos(this.la) * rr;
       ty = this.look.y + Math.sin(this.la) * rr * 0.78;
-      spd = 130; wobAmp = 8; curAmt = 0;
+      spd = 130 * this.slow; wobAmp = 8; curAmt = 0;
     } else {
       tx = this.gx; ty = this.gy;
       this.holdIn -= dt;
       if (this.hold > 0) this.hold -= dt;
       else if (this.holdIn <= 0) { this.hold = rnd(0.08, 0.34); this.holdIn = rnd(0.7, 2.6); }
       // скорость плавает внутри хода: ровное ведение выдаёт машину
-      spd = this.speed * (1 + 0.32 * Math.sin(this.t * 0.85 + this.ph[2]));
+      spd = this.speed * this.slow * (1 + 0.32 * Math.sin(this.t * 0.85 + this.ph[2]));
       if (this.hold > 0) spd *= 0.05;
       wobAmp = 62; curAmt = 1;
     }

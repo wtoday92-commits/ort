@@ -704,6 +704,8 @@
         }
 
         var f = d < wr ? Math.pow(1 - d / wr, 2.1) : 0;
+        // накладка этапа просит тишины: волна курсора знак не раздувает
+        if (mk && mk.calm) f = 0;
 
         var st = states.get(key);
         if (!st) { st = { s: 1, seen: 0 }; states.set(key, st); }

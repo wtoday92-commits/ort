@@ -24,6 +24,7 @@
   var lab = null, labOn = false, roomMul = 1, pendingRoom = null;
   var labChain = 0, frameAcc = 0, lastParam = {};
   var compNode = null, airBus = null, airSrc = null, humNodes = null, vacuumOn = false;
+  var muffleNode = null, muffleK = 0;
 
   function now() { return ctx ? ctx.currentTime : 0; }
 
@@ -39,6 +40,9 @@
     }
     return b;
   }
+
+  // k = 0 — звук как есть, 1 — как через подушку
+  function muffleFreq(k) { return 18000 * Math.pow(1100 / 18000, k); }
 
   function noiseSource(loop) {
     var s = ctx.createBufferSource();
@@ -59,7 +63,13 @@
     comp.threshold.value = -18;
     comp.ratio.value = 6;
     master.connect(comp);
-    comp.connect(ctx.destination);
+    // «подушка»: старое существо слышит всё глуше
+    muffleNode = ctx.createBiquadFilter();
+    muffleNode.type = 'lowpass';
+    muffleNode.Q.value = 0.5;
+    muffleNode.frequency.value = muffleFreq(muffleK);
+    comp.connect(muffleNode);
+    muffleNode.connect(ctx.destination);
     compNode = comp;
 
     // общий фильтр помещения: при заморозке поля он закрывается, и комната
@@ -871,6 +881,50 @@
       nf.type = 'bandpass'; nf.frequency.setValueAtTime(300, t); nf.frequency.exponentialRampToValueAtTime(3000, t + dur); nf.Q.value = 0.8;
       n.connect(nf); nf.connect(lp); n.start(t); n.stop(t + dur + 0.2);
       metal(98, 0.9, 0.05);
+    },
+
+    /* Насколько глухо слышит существо: 0 — ясно, 1 — как через подушку. */
+    muffle: function (k) {
+      muffleK = k;
+      if (!muffleNode) return;
+      muffleNode.frequency.setTargetAtTime(muffleFreq(k), now(), 1.5);
+    },
+
+    /* Где-то далеко кто-то кашляет: пачка глухих толчков с эхом помещения.
+       pattern — моменты толчков {at, dur, k}; по ним же двоится картинка. */
+    cough: function (pattern) {
+      if (!ready || muted || !pattern.length) return;
+      var t0 = now() + 0.03;
+      var out = ctx.createGain(); out.gain.value = 0.55;
+      var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 850;
+      var dl = ctx.createDelay(0.5); dl.delayTime.value = 0.14;
+      var fb = ctx.createGain(); fb.gain.value = 0.35;
+      lp.connect(out); lp.connect(dl); dl.connect(fb); fb.connect(dl); dl.connect(out);
+      out.connect(master);
+      pattern.forEach(function (p) {
+        var t = t0 + p.at, d = p.dur;
+        var s = noiseSource(false), bp = ctx.createBiquadFilter(), g = ctx.createGain();
+        s.playbackRate.value = 1.4 + Math.random() * 0.5;
+        bp.type = 'bandpass'; bp.frequency.value = 420 + Math.random() * 240; bp.Q.value = 1.3;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.9 * p.k, t + 0.018);
+        g.gain.exponentialRampToValueAtTime(0.2 * p.k, t + d * 0.35);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+        s.connect(bp); bp.connect(g); g.connect(lp);
+        s.start(t); s.stop(t + d + 0.05);
+        // хрип голоса под толчком
+        var o = ctx.createOscillator(), og = ctx.createGain();
+        o.type = 'sawtooth';
+        o.frequency.setValueAtTime(150 + Math.random() * 30, t);
+        o.frequency.exponentialRampToValueAtTime(92, t + d);
+        og.gain.setValueAtTime(0.0001, t);
+        og.gain.exponentialRampToValueAtTime(0.06 * p.k, t + 0.03);
+        og.gain.exponentialRampToValueAtTime(0.0001, t + d * 0.8);
+        o.connect(og); og.connect(lp);
+        o.start(t); o.stop(t + d);
+      });
+      var last = pattern[pattern.length - 1];
+      setTimeout(function () { try { out.disconnect(); dl.disconnect(); } catch (e) {} }, (last.at + last.dur + 2.5) * 1000);
     },
 
     tab: function (p) {
