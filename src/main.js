@@ -315,13 +315,34 @@
   /* Собран уникальный объект. Для корабля это не работа, а отклонение: серая
      ячейка сбора и серая точка в лор. Для игрока — новая запись в лорной
      вкладке. */
+  /* Серые точки уходят в шкалу лора. Сорвалась шкала — это слышно из любой
+     вкладки, и индикатор на верхней панели вздрагивает. */
+  var crashT = -99;
+  function creditLore(n) {
+    var lost = LORE.credit(n);
+    if (lost > 0) {
+      crashT = t;
+      S.scaleCrash();
+      tearPulse = Math.max(tearPulse, 0.25);
+      tabFlare = 1;
+    }
+  }
+
+  // насколько неспокойна шкала: с седьмой точки нарастает, срыв даёт вспышку
+  function errGlitch() {
+    var k = Math.max(0, Math.min(1, (LORE.errs() - 6) / 6));
+    var c = t - crashT;
+    if (c >= 0 && c < 1.4) k = Math.max(k, 1 - c / 1.4);
+    return k;
+  }
+
   function collectObject(id) {
     var ob = F.takeObject(id), u = stock[stock.length - 1];
     if (!ob || !u) return;
     u.bad = u.bad || {};
     u.bad[PHASE.COLLECT] = true;
     u.dotted = { 0: true };
-    LORE.credit(1);
+    creditLore(1);
     var c = F.cellCenter(ob.cells[0][0], ob.cells[0][1]);
     spawnErrDots(c.x, c.y);
     S.error();
@@ -483,7 +504,7 @@
     if (us.length && us.every(function (u) { return u.dotted && u.dotted[st]; })) return;
     runDots[st] += give;
     us.forEach(function (u) { u.dotted = u.dotted || {}; u.dotted[st] = true; });
-    LORE.credit(give);
+    creditLore(give);
     for (var i = 0; i < give; i++) spawnErrDots(x + i * 12, y);
     S.error();
   }
@@ -1533,16 +1554,16 @@
           tearPulse = 1; shake = 1.4;
         }
         var D2 = (D - A) / 3, v = Math.min(1, (e - A) / D2);
-        // поле уходит вдаль постепенно, вместе со всей сценой
-        F.easeZoom(1 - 0.65 * v);
+        /* Вдаль уходит вся картинка, а поле в ней остаётся крупным: двойное
+           уменьшение превращало знаки в размытые точки, и поля не было видно. */
         ejectFx.edge = Math.max(0, 0.85 * (1 - v * 4));
         ejectFx.scale = 1 - 0.72 * (1 - Math.pow(1 - v, 2.2));
-        ejectFx.blur = Math.min(1, v * 1.4);
+        ejectFx.blur = Math.min(1, 0.05 + v * 0.35);
         // пытается держать глаза открытыми: веки смыкаются, вздрагивают и снова приоткрываются
         var blink = Math.max(0, Math.sin(e * (3 + v * 7)));
         // моргает сразу, часто и сильно, но между морганиями глаза приоткрыты
-        ejectFx.lids = Math.min(1, 0.1 + v * 0.5 + blink * (0.3 + 0.45 * v));
-        ejectFx.dark = Math.min(1, Math.max(0, (v - 0.55) / 0.45));
+        ejectFx.lids = Math.min(1, 0.02 + v * 0.2 + blink * (0.22 + 0.33 * v));
+        ejectFx.dark = Math.min(1, Math.max(0, (v - 0.72) / 0.28));
       }
       // суматошный курсор: существо мечется по полю
       if (e > D * 0.06) {
@@ -2043,26 +2064,42 @@
   // --- отрисовка -------------------------------------------------------------
 
   /* Шкала серых точек под лорными папками: ошибки, накопленные на навигации. */
-  function scalePos(i, n) { return { x: vw / 2 + (i - (n - 1) / 2) * 15, y: vh - 16 }; }
+  // шкала лежит левее первой папки, на её высоте; свежие точки ближе к папке
+  function scalePos(i, n) { return { x: vw / 2 - 212 - (n - 1 - i) * 15, y: vh - 58 }; }
 
   function drawScale(sc) {
     if (!sc) return;
-    var glow = sc.glow < 1.6 ? 1 - sc.glow / 1.6 : 0;
+    var glow = sc.glow < 1.6 ? 1 - sc.glow / 1.6 : 0, ek = errGlitch();
     ctx.save();
+    // по нижней панели бегут помехи тем чаще, чем полнее шкала
+    if (ek > 0) {
+      var gb = Math.floor(t * 12);
+      for (var b = 0; b < 3; b++) {
+        if (G.rand3(gb, b, 51) > ek * 0.55) continue;
+        ctx.fillStyle = 'rgba(255,150,46,' + (0.08 + 0.12 * ek).toFixed(3) + ')';
+        ctx.fillRect(G.rand3(gb, b, 52) * vw, vh - 124 + G.rand3(gb, b, 53) * 120, 30 + G.rand3(gb, b, 54) * 220, 1);
+      }
+    }
     for (var i = 0; i < sc.n; i++) {
       var p = scalePos(i, sc.n);
+      if (ek > 0) {
+        // изредка точка глючно дёргается
+        var gj = Math.floor(t * 9) * 13 + i;
+        if (G.rand3(gj, i, 55) < 0.08 + ek * 0.25) p = { x: p.x + (G.rand3(gj, i, 56) - 0.5) * 8 * ek, y: p.y + (G.rand3(gj, i, 57) - 0.5) * 5 * ek };
+      }
       if (glow > 0) {
         ctx.fillStyle = 'rgba(240,244,255,' + (0.35 * glow * (0.6 + 0.4 * Math.sin(t * 12))).toFixed(3) + ')';
         ctx.beginPath(); ctx.arc(p.x, p.y, 9, 0, Math.PI * 2); ctx.fill();
       }
-      ctx.fillStyle = 'rgba(90,90,88,0.2)';
-      ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = glow > 0 ? 'rgba(224,226,230,0.95)' : 'rgba(118,116,110,0.95)';
-      ctx.beginPath(); ctx.arc(p.x, p.y, 3.2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,150,46,0.2)';
+      ctx.beginPath(); ctx.arc(p.x, p.y, 6.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = glow > 0 ? 'rgba(255,236,210,0.98)' : 'rgba(255,176,90,0.95)';
+      ctx.beginPath(); ctx.arc(p.x, p.y, 3.4, 0, Math.PI * 2); ctx.fill();
     }
     if (!sc.n && glow > 0) {
       ctx.strokeStyle = 'rgba(240,244,255,' + (0.5 * glow).toFixed(3) + ')';
-      ctx.beginPath(); ctx.arc(vw / 2, vh - 16, 5, 0, Math.PI * 2); ctx.stroke();
+      var p0 = scalePos(0, 1);
+      ctx.beginPath(); ctx.arc(p0.x, p0.y, 5, 0, Math.PI * 2); ctx.stroke();
     }
     ctx.restore();
   }
@@ -2185,6 +2222,7 @@
         var fresh = (k === f - 1) ? fl : 0;
         var dark = lv ? !!(lv.dark && lv.dark[i] && lv.dark[i][k]) : !!(units[k].bad && units[k].bad[i]);
         var sc = 1 + fresh * 0.35;
+        if (lv && i === 0 && k === f - 1 && lv.top0 !== undefined) sc *= lv.top0;
         if (!lv && i === PHASE.PURGE && purgeDrain > 0 && k === f - 1) sc *= 0.6 + 0.4 * Math.max(0, Math.min(1, purgeDrain / 0.45));
         // последняя единица анализа тает по мере сортировки
         if (!lv && i === PHASE.ANALYZE && k === f - 1) {
@@ -2465,8 +2503,39 @@
       ctx.strokeStyle = on ? 'rgba(255,232,190,0.95)'
         : 'rgba(255,' + Math.round(150 + fl * 80 + fresh * 60) + ',' + Math.round(46 + fl * 120 + fresh * 90) + ',' + (0.22 + fl * 0.7 + fresh * 0.4) + ')';
       if (dmg >= 0.5) ctx.strokeStyle = 'rgba(170,132,92,' + (0.75 - 0.25 * dmg).toFixed(2) + ')';
+      var ek = i === 1 ? errGlitch() : 0, gs1 = Math.floor(t * 10);
+      if (ek > 0 && G.rand3(gs1, 5, 91) < 0.1 + ek * 0.3) ctx.translate((G.rand3(gs1, 6, 92) - 0.5) * 6 * ek, (G.rand3(gs1, 7, 93) - 0.5) * 3 * ek);
       G.drawGlyph(ctx, [33, 164, 90, 139][i], i >= 2 ? 18 : (on ? 24 : 20), on ? 1.6 : 1.2);
+      if (i === 1) {
+        // знак чуть ломается: срезанный кусок съезжает вбок
+        if (ek > 0 && G.rand3(gs1, 8, 94) < ek * 0.25) {
+          ctx.save();
+          ctx.beginPath(); ctx.rect(-14, -3 + G.rand3(gs1, 9, 95) * 6, 28, 4); ctx.clip();
+          ctx.translate(3 + 4 * ek, 0);
+          G.drawGlyph(ctx, 164, on ? 24 : 20, on ? 1.6 : 1.2);
+          ctx.restore();
+        }
+        // сколько точек в шкале лора: столько оранжевых точек под знаком
+        var en = LORE.errs();
+        for (var di = 0; di < en; di++) {
+          var dx = (di - (en - 1) / 2) * 5.2, dy = 17;
+          var gd = Math.floor(t * 9) * 7 + di;
+          if (ek > 0 && G.rand3(gd, di, 96) < 0.05 + ek * 0.2) { dx += (G.rand3(gd, di, 97) - 0.5) * 4 * ek; dy += (G.rand3(gd, di, 98) - 0.5) * 3 * ek; }
+          ctx.fillStyle = di >= 6 ? 'rgba(255,196,120,0.95)' : 'rgba(255,160,70,0.9)';
+          ctx.beginPath(); ctx.arc(dx, dy, 1.7, 0, Math.PI * 2); ctx.fill();
+        }
+      }
       ctx.restore();
+    }
+    var ekp = errGlitch();
+    if (ekp > 0) {
+      // помехи бегут по панели у знака лорной вкладки
+      var gp = Math.floor(t * 11), lp = panelPos(1);
+      for (var pb = 0; pb < 2; pb++) {
+        if (G.rand3(gp, pb, 61) > ekp * 0.45) continue;
+        ctx.fillStyle = 'rgba(255,160,70,' + (0.1 + 0.15 * ekp).toFixed(3) + ')';
+        ctx.fillRect(lp.x - 70 + G.rand3(gp, pb, 62) * 90, 22 + G.rand3(gp, pb, 63) * 40, 20 + G.rand3(gp, pb, 64) * 70, 1);
+      }
     }
     if (dmg > 0) {
       // рваные полосы помех поперёк панели

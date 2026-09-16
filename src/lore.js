@@ -55,7 +55,9 @@
   /* Серые точки с навигации копятся шкалой под папками (не больше ERR_CAP).
      Выбранная запись забирает из шкалы свою цену в первую папку. */
   var layout = {};                       // место каждой появившейся записи: id -> {x, y, w, h}
-  var ERR_CAP = 12, COST = { white: 3, blue: 4, green: 5 }, lackAt = -99;
+  var ERR_CAP = 12, COST = { white: 3, blue: 4, green: 5 }, lackAt = -99, crashAt = -99;
+  // шанс срыва шкалы, когда она доходит до этой точки
+  var CRASH_P = { 7: 0.15, 8: 0.35, 9: 0.6, 10: 0.92, 11: 0.98, 12: 1 };
   var stats = { errors: 0, denied: 0, loreTime: 0, objects: 0 };
   var blocks = [], ship = [];
   var journal = { open: false, scroll: 0, fresh: 0, k: 0, max: 0, sel: null, hits: [] };
@@ -399,12 +401,12 @@
     F.easeZoom(Math.max(0.6, Math.min(z || 1.7, fit)));
   }
 
-  /* Цена фигур в ячейках заряда: две маленькие — одна ячейка, увеличенная —
-     одна. Нечётная маленькая округляется вверх. */
+  /* Цена фигур в ячейках заряда: три фигуры — одна ячейка. Начатая тройка
+     уже занимает свою ячейку. */
   function costOf(list) {
     var small = 0, big = 0;
     list.forEach(function (p) { if (p.scale === 2) big++; else small++; });
-    return Math.ceil(small / 2) + big;
+    return Math.ceil(small / 3) + big;
   }
 
   function btnReset() { btn = { x: 0, y: 0, r: 21, hot: 0, live: false }; if (env) env.setButton(null); }
@@ -646,7 +648,7 @@
       if (!it) return;
       placed.push({ item: it, scale: 1, rot: d.rot || 0, cells: tileCells(it, d.rot || 0), x: d.x, y: d.y, shake: 0 });
     });
-    ses = { stage: 1, bl: bl, placed: placed, scroll: 0, drag: null, used: 0 };
+    ses = { stage: 1, bl: bl, placed: placed, scroll: 0, drag: null, used: 0, usedAnim: placed.length / 3 };
     btnReset();
   }
 
@@ -1279,6 +1281,7 @@
           if (hitP) {
             s.placed.splice(j, 1);
             saveDraft(s);
+            S.cellShrink(false, true);
             s.drag = { item: p.item, rot: p.rot || 0, x: x, y: y };
             S.grip(true);
             return;
@@ -1332,6 +1335,7 @@
         s.placed.push(np);
         saveDraft(s);
         S.knock();
+        S.cellShrink(s.placed.length % 3 === 0, false);
       } else { reject(0.5); }
       return;
     }
@@ -1376,7 +1380,13 @@
         dirty = true; startTiling(bl); return;
       }
     }
-    if (s.stage === 1) { show = coverage() === bl.n; rect = rectOf(bl); }
+    if (s.stage === 1) {
+      show = coverage() === bl.n; rect = rectOf(bl);
+      // пока фигуру ведут над рамкой, ячейка уже чуть поддаётся
+      var hover = s.drag && cellAt(bl, s.drag.x, s.drag.y) >= 0 ? 0.12 : 0;
+      var want = (s.placed.length + hover) / 3;
+      s.usedAnim += (want - s.usedAnim) * Math.min(1, dt * 5);
+    }
     if (s.stage === 2) { show = s.rem.every(function (k) { return !!s.slots[k]; }); rect = rectOf(bl); }
     if (s.stage === 3) {
       s.words.forEach(function (w) {
@@ -1425,6 +1435,10 @@
         }
       }
       // у заготовки записи объекта символы границы рисуются отдельно, цветом
+      tiledCells(bl, active).forEach(function (k) {
+        var mt = marks.get(cellKey(bl, k));
+        if (mt) mt.hide = 1;
+      });
       if (bl.stage === 0 && (bl.inst || bl === nb) && !framed) {
         for (var e = 0; e < bl.n; e++) {
           var ex = e % bl.w, ey = (e / bl.w) | 0;
@@ -1530,6 +1544,35 @@
   }
 
   /* Заготовка записи объекта: мигают символы её границы. */
+  /* Клетки, уже покрытые фигурами: на этапе укладки их знаки горят цветом
+     записи, и видно, где поле ещё пустое. */
+  function tiledCells(bl, active) {
+    var out = [];
+    if (active && ses.stage === 1) {
+      ses.placed.forEach(function (p) { p.cells.forEach(function (q) { out.push((p.y + q[1]) * bl.w + p.x + q[0]); }); });
+    } else if (bl.stage === 1 && bl.draft) {
+      bl.draft.forEach(function (d) { d.c.forEach(function (q) { out.push(q[1] * bl.w + q[0]); }); });
+    }
+    return out;
+  }
+
+  function drawTiled(ctx, bl, active) {
+    var list = tiledCells(bl, active);
+    if (!list.length) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    list.forEach(function (k) {
+      if (k < 0 || k >= bl.n) return;
+      var p = cellXY(bl, k), a = 0.85 + 0.15 * Math.sin(now * 2 + k);
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      glowStroke(ctx, objColor(bl, a.toFixed(3)), 12, 1.6);
+      G.drawGlyph(ctx, bl.cells[k], F.CELL * 0.66, 1.6);
+      ctx.restore();
+    });
+    ctx.restore();
+  }
+
   function drawObjSeed(ctx, bl, hot) {
     var green = bl.def.color === 'green', white = !bl.inst;
     ctx.save();
@@ -1780,6 +1823,7 @@
       if (!textOn && !wordsOn && bl.words) bl.words.forEach(function (c) { drawTileEdges(ctx, bl, cellsAbs(bl, c), 'rgba(236,244,255,0.5)', 1.2); });
       // начатая укладка видна и вне этапа
       if (bl.stage === 1 && bl.draft && !(active && ses.stage === 1)) bl.draft.forEach(function (d) { drawTileEdges(ctx, bl, d.c, 'rgba(255,190,110,0.6)', 1.6); });
+      drawTiled(ctx, bl, active);
       ctx.restore();
       Object.keys(bl.restored).forEach(function (kk) {
         var k = +kk;
@@ -2033,7 +2077,36 @@
     press: press, release: release, move: move, wheel: wheel, folderClick: folderClick,
     busy: function () { return !!ses && !ses.choose; },
     /* Ошибка навигационного анализа — стак ошибок в первую лорную папку. */
-    credit: function (n) { n = n || 1; errs = Math.min(ERR_CAP, errs + n); stats.errors += n; flare[0] = 1; dirty = true; },
+    /* Новая серая точка. До шести точек шкала держит спокойно; каждая
+       следующая может её сорвать — тогда пропадает половина точек (с
+       округлением вниз). На десятой срыв почти неизбежен, на двенадцатой —
+       неизбежен. Возврат точек из отменённого выбора сюда не идёт.
+       Возвращает, сколько точек потеряно. */
+    credit: function (n) {
+      n = n || 1;
+      var lost = 0;
+      for (var i = 0; i < n; i++) {
+        errs = Math.min(ERR_CAP, errs + 1);
+        stats.errors++;
+        var p = CRASH_P[errs] || 0;
+        if (p && Math.random() < p) {
+          var gone = Math.floor(errs / 2);
+          if (env && env.active()) {
+            for (var j = 0; j < gone; j++) {
+              var sp = env.scalePos(errs - 1 - j, errs);
+              fly(sp.x, sp.y, sp.x + rnd(-90, 90), sp.y + rnd(40, 120), { d: j * 0.03, dur: 0.6, col: 'amber', r: 2.4 });
+            }
+          }
+          errs -= gone;
+          lost += gone;
+          crashAt = now;
+        }
+      }
+      flare[0] = 1;
+      dirty = true;
+      return lost;
+    },
+    errs: function () { return errs; },
     stat: function (k, v) { stats[k] = (stats[k] || 0) + v; },
     /* Новое существо за пультом. Утилизация по износу — не выброс: её корабль
        выбросом не считает, и записи о сбоях от неё не открываются. */
@@ -2074,14 +2147,16 @@
       S.tab(journal.open ? 1 : 0);
     },
     folderView: function () {
-      var used = ses && ses.stage === 1 ? costOf(ses.placed) : 0;
-      var charge = Math.max(0, file[0] - used), dark0 = [];
+      // остаток первой папки дробный: верхняя ячейка тает по трети за фигуру
+      var R = Math.max(0, file[0] - (ses && ses.stage === 1 ? ses.usedAnim : 0));
+      var charge = Math.max(0, Math.ceil(R - 1e-3)), top = R - Math.floor(R), dark0 = [];
+      if (top < 1e-3) top = 1;
       for (var i = 0; i < charge; i++) dark0.push(true);
       return {
-        counts: [charge, file[1], file[2], file[3]],
+        counts: [charge, file[1], file[2], file[3]], top0: top,
         active: ses ? (ses.choose ? ses.slot : slotOf(ses.stage)) : -1, cap: LCAP, icons: SLOT_ICON, flare: flare,
         dark: [dark0, [], [], []],
-        scale: { n: errs, cap: ERR_CAP, glow: now - lackAt }
+        scale: { n: errs, cap: ERR_CAP, glow: now - lackAt, crash: now - crashAt }
       };
     },
     /* Всё вне записи гаснет, пока идёт этап. На последнем этапе гаснет всё. */

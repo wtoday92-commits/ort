@@ -883,6 +883,25 @@
       metal(98, 0.9, 0.05);
     },
 
+    /* Ячейка первой папки тает под фигурой; full — истаяла совсем. back — фигуру
+       убрали, ячейка возвращается. */
+    cellShrink: function (full, back) {
+      var f = back ? 1.9 : (full ? 0.8 : 1.4);
+      ping(BASE * f, full ? 0.34 : 0.14, full ? 0.06 : 0.035, 'sine');
+      if (full && !back) hit(0.14, 0.05, 400, 2400, 300);
+      if (back) ping(BASE * f * 1.37, 0.12, 0.025, 'sine', 5);
+    },
+
+    /* Шкала точек перегрузилась: короткий сухой сбой, слышный из любой вкладки. */
+    scaleCrash: function () {
+      if (!ready || muted) return;
+      for (var i = 0; i < 5; i++) (function (k) {
+        setTimeout(function () { hit(0.04 + Math.random() * 0.04, 0.08, 1200, 5000 - k * 600, 900); }, k * 55 + Math.random() * 25);
+      })(i);
+      ping(BASE * 1.78, 0.5, 0.05, 'square');
+      setTimeout(function () { ping(BASE * 0.89, 0.6, 0.05, 'square', -20); }, 180);
+    },
+
     /* Для записи не хватает серых точек. */
     lack: function () {
       ping(BASE * 0.62, 0.22, 0.07, 'triangle');
