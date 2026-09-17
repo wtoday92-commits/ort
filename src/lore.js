@@ -58,7 +58,7 @@
   var ERR_CAP = 12, COST = { white: 3, blue: 4, green: 5 }, lackAt = -99, crashAt = -99;
   // шанс срыва шкалы, когда она доходит до этой точки
   var CRASH_P = { 7: 0.15, 8: 0.35, 9: 0.6, 10: 0.92, 11: 0.98, 12: 1 };
-  var stats = { errors: 0, denied: 0, loreTime: 0, objects: 0 };
+  var stats = { errors: 0, denied: 0, loreTime: 0, objects: 0, ineffMoves: 0 };
   var blocks = [], ship = [], shipSeq = 0;
   var journal = { open: false, scroll: 0, fresh: 0, k: 0, max: 0, sel: null, hits: [] };
   var marks = new Map();

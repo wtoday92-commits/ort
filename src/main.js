@@ -24,14 +24,19 @@
   var IDLE_BACK = 14;
   var DRIFT_FIXED = qnum('driftmax', 0);       // для проверок: жёсткий потолок шкалы
   var EJECT_FIRST = qnum('ejectfirst', 60), EJECT_NEXT = qnum('ejectnext', 20);   // длительность сцены выброса, с
-  var MOVE_FILL = qnum('fill', 0.05);          // заполненность карты, после которой корабль переезжает
+  // заполненность карты, после которой корабль переезжает: существо в одиночку доходит до неё минут за 25-30
+  var MOVE_FILL = qnum('fill', 0.025);
+  /* Перелёт от неэффективности: игрок около часа копит ошибки. Нужно не меньше
+     INEFF_N серых точек за последний час, и первая из них — не позже чем
+     INEFF_SPAN назад: разовая вспышка ошибок перелёт не вызывает. */
+  var INEFF_N = qnum('ineffn', 12), INEFF_WIN = 3600, INEFF_SPAN = qnum('ineffspan', 40 * 60);
   var NAV_W = 192;
   // перерывы втрое реже, чем были: они не должны дёргать игрока
   var LUNCH_EVERY = qnum('lunch', 45 * 60), LUNCH_DUR = qnum('lunchdur', 30), LUNCH_RETRY = qnum('lunchretry', 9 * 60);
   var SLEEP_EVERY = qnum('sleep', 120 * 60), SLEEP_DUR = qnum('sleepdur', 120), SLEEP_RETRY = qnum('sleepretry', 24 * 60);
   var LORE_IDLE = qnum('loreidle', 180);        // сколько игрок может молчать в лорной вкладке, прежде чем существо вернётся к работе
   var LUNCH_DEATH = 5, SLEEP_DEATH = 3;
-  var LIFE = qnum('life', 10 * 3600);          // сколько работает существо, пока его не утилизируют по износу, с
+  var LIFE = qnum('life', 5 * 3600);           // сколько работает существо, пока его не утилизируют по износу, с
   var TUT_CYCLES = 3;                          // старое существо: столько кругов игрок должен закрыть сам
   var TUT_PLAY = qnum('tutplay', 330), TUT_MIN = qnum('tutmin', 240), TUT_GRACE = 40;
   var SPIN_P = qnum('spin', 0.03);             // как часто край собранного блока занимает крутящийся знак       // столько отказов подряд существо не переживёт
@@ -320,7 +325,21 @@
   /* Серые точки уходят в шкалу лора. Сорвалась шкала — это слышно из любой
      вкладки, и индикатор на верхней панели вздрагивает. */
   var crashT = -99;
+  /* Серые точки, которые отправил сам игрок, — время каждой. Корабль видит
+     в них только работу, которая на этом месте идёт всё хуже. */
+  var ineff = [];
+  function noteIneff(n) {
+    if (tut || !humanActive()) return;
+    for (var i = 0; i < n; i++) ineff.push(t);
+    if (ineff.length > 200) ineff.splice(0, ineff.length - 200);
+  }
+  function ineffDue() {
+    while (ineff.length && t - ineff[0] > INEFF_WIN) ineff.shift();
+    return ineff.length >= INEFF_N && t - ineff[0] >= INEFF_SPAN;
+  }
+
   function creditLore(n) {
+    noteIneff(n);
     var lost = LORE.credit(n);
     if (lost > 0) {
       crashT = t;
@@ -1407,7 +1426,7 @@
     S.defectWarn(f);
   }
 
-  /* Жизнь существа. Каждое существо стареет само: за LIFE (10 часов работы)
+  /* Жизнь существа. Каждое существо стареет само: за LIFE (5 часов работы)
      оно изнашивается, и корабль утилизирует его — штатно, как любое другое.
      С 70% жизни существо заметно медленнее и ошибается чаще, с 80% до 90%
      разрушается верхняя панель, после 90% ею пользоваться нельзя. Обычный
@@ -1929,12 +1948,14 @@
 
   function stepMove(dt) {
     if (!move) {
-      if (panel !== 0 || eject || F.fill() < MOVE_FILL) return;
+      if (panel !== 0 || eject || tut) return;
+      var why = F.fill() >= MOVE_FILL ? 'fill' : ineffDue() ? 'ineff' : null;
+      if (!why) return;
       var g;
       do { g = 1 + Math.floor(Math.random() * (G.COUNT - 1)); } while (G.isParasite(g));
-      move = { st: 'signal', t: 0, gid: g, ring: 0 };
+      move = { st: 'signal', t: 0, gid: g, ring: 0, why: why };
       F.setBeacon(g);
-      LORE.ship('relocate_signal');
+      LORE.ship(why === 'ineff' ? 'relocate_ineff' : 'relocate_signal');
       return;
     }
     move.t += dt;
@@ -1979,6 +2000,11 @@
         taken.clear(); reveals.clear(); guide = null;
         LORE.ship('relocate');
         LORE.nextSector();
+        if (move.why === 'ineff') {
+          // следующая белая запись — о том, почему корабль ушёл
+          LORE.stat('ineffMoves', 1);
+          ineff = [];
+        }
         c = F.camCell;
       }
       u = Math.min(1, (move.t - T1) / (T2 - T1));
@@ -3021,6 +3047,8 @@
       // иначе перезагрузкой можно было увернуться от выброса
       drift: drift, floor: driftFloor, ld: lunchDenied, sd: sleepDenied,
       ej: eject && !eject.reset ? eject.reason : null,
+      // ошибки игрока за последний час — сколько секунд назад была каждая
+      ie: ineff.map(function (x) { return Math.round(t - x); }),
       // содержимое навигационных папок
       stock: stock, mapId: mapId
     } };
@@ -3250,6 +3278,8 @@
         setPhase: setPhase,
         breakNow: function (kind) { if (kind === 'sleep') sleepDue = t; else lunchDue = t; },
         relocateNow: function () { MOVE_FILL = 0; },
+        ineff: function (arr) { if (arr) ineff = arr.map(function (a) { return t - a; }); return { n: ineff.length, due: ineffDue(), ages: ineff.map(function (x) { return Math.round(t - x); }) }; },
+        credit: creditLore,
         endNow: function (r) { endCycle(r || 'drift'); },
         setDrift: function (v) { drift = v; },
         setAge: function (v) { age = v; },
@@ -3324,6 +3354,8 @@
     if (!l) return;
     drift = +l.drift || 0; driftFloor = +l.floor || 0;
     lunchDenied = l.ld | 0; sleepDenied = l.sd | 0;
+    if (Array.isArray(l.ie)) ineff = l.ie.filter(function (a) { return isFinite(a) && a >= 0 && a <= INEFF_WIN; })
+      .sort(function (a, b) { return b - a; }).map(function (a) { return t - a; });
     if (Array.isArray(l.stock)) {
       stock = l.stock.filter(function (u) { return u && typeof u.stage === 'number'; });
       mapId = l.mapId | 0;
