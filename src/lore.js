@@ -1008,9 +1008,24 @@
 
   /* Раскладка текста внутри рамки. Шрифт привязан к размеру клетки, поэтому
      текст приближается и отдаляется вместе с картой. */
+  var textMemo = {};
   function blockText(bl) {
+    var r = rectOf(bl);
+    var key = F.CELL.toFixed(4) + '|' + bl.dots.length + '|' + bl.num + '|' + bl.ejn + '|' + bl.sec + '|' + creatureNo + '|' + ejectedNo + '|' + ejectSector;
+    var m = textMemo[bl.id];
+    if (!m || m.key !== key) m = textMemo[bl.id] = { key: key, lay: layoutText(bl, r) };
+    var dx = r.x0 - m.lay.rect.x0, dy = r.y0 - m.lay.rect.y0;
+    return {
+      fs: m.lay.fs, lh: m.lay.lh, rect: r,
+      words: m.lay.words.map(function (w) {
+        return { s: w.s, text: w.text, cmd: w.cmd, num: w.num, key: w.key, rx: w.rx, ry: w.ry, w: w.w,
+                 x: w.x + dx, y: w.y + dy, cx: w.cx + dx };
+      })
+    };
+  }
+  function layoutText(bl, r) {
     var defs = sentenceDefs(bl, sentences(bl).length);
-    var r = rectOf(bl), c = F.CELL, pad = c * 0.2;
+    var c = F.CELL, pad = c * 0.2;
     var maxW = r.x1 - r.x0 - pad * 2, maxH = r.y1 - r.y0 - pad * 2;
     var fs = c * 0.3, words = [], lh = 0, h = 0;
     for (var it = 0; it < 8; it++) {
@@ -1187,7 +1202,7 @@
   function hitBtn(x, y) { return btn.live && Math.hypot(x - btn.x, y - btn.y) < btn.r + 12; }
 
   function menuRect() {
-    var r = rectOf(ses.bl), v = env.view(), w = 170, h = Math.min(360, v.h - 250);
+    var r = rectOf(ses.bl), v = env.view(), w = ses.stage === 1 ? 210 : 170, h = Math.min(ses.stage === 1 ? 400 : 360, v.h - 250);
     var x = r.x1 + 40;
     if (x + w > v.w - 12) x = r.x0 - 40 - w;
     var y = clamp((r.y0 + r.y1) / 2 - h / 2, 96, v.h - 140 - h);
@@ -1198,19 +1213,24 @@
     if (ses.stage === 1) {
       var excl = ses.placed.map(function (p) { return p.item; });
       if (ses.drag) excl.push(ses.drag.item);
-      return invList('shape', excl).map(function (it) { return { item: it }; });
+      // одинаковые фигуры — одной стопкой со счётом
+      return INV().stackShapes(invList('shape', excl), false);
     }
     if (ses.stage === 2) return ses.menu.filter(function (e) { return e.slot < 0 && !(ses.drag && ses.drag.entry === e); });
     if (ses.stage === 3) return ses.menu.filter(function (e) { return !e.used; });
     return [];
   }
 
+  var MENU_ROW1 = 84;
   function menuLayout() {
     var m = menuRect(), list = menuList(), out = [];
     if (ses.stage === 1) {
+      // два столбца: нужная фигура находится быстрее
+      var cw = (m.w - 22) / 2;
       list.forEach(function (e, i) {
-        var y = m.y + 10 + i * 88 - ses.scroll;
-        out.push({ e: e, x: m.x + 8, y: y, w: m.w - 16, h: 80, cx: m.x + m.w / 2, cy: y + 40 });
+        var col = i % 2, row = (i / 2) | 0;
+        var x = m.x + 8 + col * (cw + 6), y = m.y + 10 + row * MENU_ROW1 - ses.scroll;
+        out.push({ e: e, x: x, y: y, w: cw, h: MENU_ROW1 - 8, cx: x + cw / 2, cy: y + (MENU_ROW1 - 8) / 2 });
       });
     } else {
       list.forEach(function (e, i) {
@@ -1360,7 +1380,7 @@
     if (ses.stage === 0 || ses.stage === 4) return true;
     var L = menuLayout();
     if (x >= L.m.x && x <= L.m.x + L.m.w && y >= L.m.y && y <= L.m.y + L.m.h) {
-      var rowH = ses.stage === 1 ? 88 : 78, rows = ses.stage === 1 ? L.items.length : Math.ceil(L.items.length / 2);
+      var rowH = ses.stage === 1 ? MENU_ROW1 : 78, rows = Math.ceil(L.items.length / 2);
       var maxS = Math.max(0, rows * rowH + 20 - L.m.h);
       ses.scroll = clamp(ses.scroll + (dy > 0 ? rowH : -rowH), 0, maxS);
     }
@@ -1505,6 +1525,53 @@
     ctx.shadowColor = col; ctx.shadowBlur = blur; ctx.strokeStyle = col; ctx.lineWidth = lw;
   }
 
+  /* Светящиеся знаки рисуются из готовых картинок. Размытие свечения на
+     каждый знак в каждом кадре съедало видеокарту: несколько заготовок на
+     экране вешали игру. Картинка делается один раз на знак, цвет и размер. */
+  var sprites = {}, spriteN = 0;
+  function sprite(ctx, key, size, paint) {
+    var tm = ctx.getTransform ? ctx.getTransform() : null;
+    // масштаб без поворота; округлён, чтобы не плодить картинки
+    var sc = tm ? Math.max(0.5, Math.round(Math.hypot(tm.a, tm.b) * 4) / 4) : 1;
+    var qs = Math.max(6, Math.round(size / 4) * 4);
+    var k = key + '|' + qs + '|' + sc.toFixed(2);
+    var sp = sprites[k];
+    if (!sp) {
+      if (spriteN > 900) { sprites = {}; spriteN = 0; }
+      var dim = qs * 1.9 + 24, cv = document.createElement('canvas');
+      cv.width = cv.height = Math.ceil(dim * sc);
+      var c2 = cv.getContext('2d');
+      c2.scale(sc, sc);
+      c2.translate(dim / 2, dim / 2);
+      paint(c2, qs, sc);
+      sp = sprites[k] = { cv: cv, dim: dim, qs: qs };
+      spriteN++;
+    }
+    var d = sp.dim * size / sp.qs;
+    ctx.drawImage(sp.cv, -d / 2, -d / 2, d, d);
+  }
+  // знак со свечением в текущей точке ctx; rgb — "r,g,b", a — яркость
+  function glowGlyph(ctx, g, rgb, a, size, lw, blur) {
+    if (a <= 0.004) return;
+    var ga = ctx.globalAlpha;
+    ctx.globalAlpha = ga * Math.min(1, a);
+    sprite(ctx, 'g' + g + '|' + rgb + '|' + lw + '|' + blur, size, function (c2, qs, sc) {
+      glowStroke(c2, 'rgb(' + rgb + ')', blur * sc, lw);
+      G.drawGlyph(c2, g, qs, lw);
+    });
+    ctx.globalAlpha = ga;
+  }
+  function objRGB(bl) {
+    if (bl.def.color === 'green') return '120,255,170';
+    if (bl.def.color === 'blue') return '130,185,255';
+    return '240,244,255';
+  }
+  // запись видна на экране (с запасом)
+  function onScreen(bl) {
+    var r = rectOf(bl), v = env.view(), m = F.CELL * 2;
+    return r.x1 > -m && r.y1 > -m && r.x0 < v.w + m && r.y0 < v.h + m;
+  }
+
   function drawFrame(ctx, bl, prog) {
     var r = rectOf(bl), w = r.x1 - r.x0, h = r.y1 - r.y0, L = 2 * (w + h) * clamp(prog, 0, 1);
     ctx.save();
@@ -1523,10 +1590,10 @@
     ctx.restore();
   }
 
-  function edgesPath(ctx, cells, ox, oy, u) {
+  function edgesPath(ctx, cells, ox, oy, u, keep) {
     var set = {};
     cells.forEach(function (q) { set[q[0] + ',' + q[1]] = 1; });
-    ctx.beginPath();
+    if (!keep) ctx.beginPath();
     cells.forEach(function (q) {
       var x0 = ox + q[0] * u, y0 = oy + q[1] * u, x1 = x0 + u, y1 = y0 + u;
       if (!set[q[0] + ',' + (q[1] - 1)]) { ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); }
@@ -1537,8 +1604,13 @@
   }
 
   function drawTileEdges(ctx, bl, cellsAbs, col, lw) {
+    drawManyEdges(ctx, bl, [cellsAbs], col, lw);
+  }
+  function drawManyEdges(ctx, bl, groups, col, lw) {
+    if (!groups.length) return;
     var o = org(bl);
-    edgesPath(ctx, cellsAbs, o.x, o.y, F.CELL);
+    ctx.beginPath();
+    groups.forEach(function (cs) { edgesPath(ctx, cs, o.x, o.y, F.CELL, true); });
     glowStroke(ctx, col, 8, lw);
     ctx.stroke();
   }
@@ -1566,8 +1638,7 @@
       var p = cellXY(bl, k), a = 0.85 + 0.15 * Math.sin(now * 2 + k);
       ctx.save();
       ctx.translate(p.x, p.y);
-      glowStroke(ctx, objColor(bl, a.toFixed(3)), 12, 1.6);
-      G.drawGlyph(ctx, bl.cells[k], F.CELL * 0.66, 1.6);
+      glowGlyph(ctx, bl.cells[k], objRGB(bl), a, F.CELL * 0.66, 1.6, 12);
       ctx.restore();
     });
     ctx.restore();
@@ -1594,8 +1665,7 @@
         a = 0.9 * Math.max(0, Math.sin(now * 0.9 + ph));
       }
       if (hot) a = Math.min(1, a + 0.3 + 0.2 * Math.sin(now * 6));
-      glowStroke(ctx, objColor(bl, a.toFixed(3)), 10, 1.5);
-      G.drawGlyph(ctx, bl.cells[k], F.CELL * 0.62 * sc, 1.5);
+      glowGlyph(ctx, bl.cells[k], objRGB(bl), a, F.CELL * 0.62 * sc, 1.5, 10);
       ctx.restore();
     }
     ctx.restore();
@@ -1606,9 +1676,11 @@
     ctx.globalCompositeOperation = 'lighter';
     ctx.translate(x, y);
     ctx.globalAlpha *= alpha === undefined ? 1 : alpha;
-    glowStroke(ctx, 'rgba(236,244,255,0.95)', s * 0.2, Math.max(1.4, s * 0.04));
-    ctx.beginPath(); ctx.arc(0, 0, s * 0.34, 0, Math.PI * 2); ctx.stroke();
-    if (withGlyph) G.drawGlyph(ctx, g, s * 0.44, Math.max(1.1, s * 0.03));
+    sprite(ctx, 'p' + (withGlyph ? g : '-'), s, function (c2, q, sc) {
+      glowStroke(c2, 'rgba(236,244,255,0.95)', q * 0.2 * sc, Math.max(1.4, q * 0.04));
+      c2.beginPath(); c2.arc(0, 0, q * 0.34, 0, Math.PI * 2); c2.stroke();
+      if (withGlyph) G.drawGlyph(c2, g, q * 0.44, Math.max(1.1, q * 0.03));
+    });
     ctx.restore();
   }
 
@@ -1626,19 +1698,26 @@
       if (li.y + li.h < m.y || li.y > m.y + m.h) return;
       var e = li.e, sh = e.shake ? Math.sin(now * 60) * e.shake * 10 : 0;
       if (s.stage === 1) {
-        var it = e.item, u = Math.min(16, (li.w - 12) / it.w, (li.h - 12) / it.h);
-        edgesPath(ctx, it.c, li.cx + sh - it.w * u / 2, li.cy - it.h * u / 2, u);
+        // место под число справа сверху
+        var it = e.item, sup = e.n > 1 ? 16 : 0;
+        var u = Math.min(16, (li.w - 12 - sup) / it.w, (li.h - 12 - sup * 0.6) / it.h);
+        var bx = li.cx + sh - it.w * u / 2 - sup / 2, by = li.cy - it.h * u / 2 + sup * 0.3;
+        edgesPath(ctx, it.c, bx, by, u);
         glowStroke(ctx, (it.by || 'c') === 'p' ? 'rgba(255,210,150,0.95)' : 'rgba(255,160,70,0.9)', 8, 1.6);
         ctx.stroke();
         (it.s || []).forEach(function (sp) {
           var q = it.c[sp.i];
           if (!q) return;
           ctx.save();
-          ctx.translate(li.cx + sh - it.w * u / 2 + (q[0] + 0.5) * u, li.cy - it.h * u / 2 + (q[1] + 0.5) * u);
+          ctx.translate(bx + (q[0] + 0.5) * u, by + (q[1] + 0.5) * u);
           ctx.rotate(now * 1.9);
           G.drawGlyph(ctx, sp.g, u * 0.8, 1.1);
           ctx.restore();
         });
+        if (e.n > 1) {
+          ctx.shadowBlur = 0;
+          NUM().sup(ctx, e.n, bx + it.w * u, by, 17, 'rgba(255,220,180,0.95)');
+        }
       } else if (s.stage === 2) {
         var sel = s.sel === e;
         drawPurgedAt(ctx, li.cx + sh, li.cy, sel ? 48 : 58, e.g, true, e.dim ? 0.28 : sel ? 0.6 : 1);
@@ -1799,6 +1878,7 @@
     var nb = nextBase();
     blocks.forEach(function (bl) {
       var active = !!(ses && ses.bl === bl);
+      if (!active && !onScreen(bl)) return;
       var choosing = !!(ses && ses.choose && ses.choose.indexOf(bl) >= 0);
       if (bl.stage === 0 && (bl.inst || bl === nb)) drawObjSeed(ctx, bl, choosing);
       if (choosing && bl.stage >= 1) {
@@ -1819,10 +1899,10 @@
       /* Сетка фигур нужна, пока слов ещё нет. На этапе слов она мешает их
          разглядеть, а после него рамку делят уже слова. */
       var wordsOn = active && ses.stage === 3;
-      if (!textOn && !wordsOn && !bl.words) bl.tiles.forEach(function (tl) { drawTileEdges(ctx, bl, tl.c, 'rgba(236,244,255,0.55)', 1.2); });
-      if (!textOn && !wordsOn && bl.words) bl.words.forEach(function (c) { drawTileEdges(ctx, bl, cellsAbs(bl, c), 'rgba(236,244,255,0.5)', 1.2); });
+      if (!textOn && !wordsOn && !bl.words) drawManyEdges(ctx, bl, bl.tiles.map(function (tl) { return tl.c; }), 'rgba(236,244,255,0.55)', 1.2);
+      if (!textOn && !wordsOn && bl.words) drawManyEdges(ctx, bl, bl.words.map(function (c) { return cellsAbs(bl, c); }), 'rgba(236,244,255,0.5)', 1.2);
       // начатая укладка видна и вне этапа
-      if (bl.stage === 1 && bl.draft && !(active && ses.stage === 1)) bl.draft.forEach(function (d) { drawTileEdges(ctx, bl, d.c, 'rgba(255,190,110,0.6)', 1.6); });
+      if (bl.stage === 1 && bl.draft && !(active && ses.stage === 1)) drawManyEdges(ctx, bl, bl.draft.map(function (d) { return d.c; }), 'rgba(255,190,110,0.6)', 1.6);
       drawTiled(ctx, bl, active);
       ctx.restore();
       Object.keys(bl.restored).forEach(function (kk) {

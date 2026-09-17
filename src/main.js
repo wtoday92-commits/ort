@@ -2738,7 +2738,10 @@
 
     var sx = Pointer.x - prevPX, sy = Pointer.y - prevPY;
     cursorSpd = Math.sqrt(sx * sx + sy * sy) / Math.max(1e-4, dt);
+    // одно неверное значение не должно навсегда сломать скорость курсора
+    if (!isFinite(cursorSpd)) cursorSpd = 0;
     Pointer.spd += (cursorSpd - Pointer.spd) * Math.min(1, dt * 9);
+    if (!isFinite(Pointer.spd)) Pointer.spd = 0;
     prevPX = Pointer.x; prevPY = Pointer.y;
 
     if (tapSquash > 0) tapSquash -= dt;

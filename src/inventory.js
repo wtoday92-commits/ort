@@ -63,7 +63,40 @@
     ctx.restore();
   }
 
-  root.Numeral = { draw: drawNumeral };
+  /* Счёт предметов пишется как степень: мелко, справа над предметом.
+     right/top — правый верхний угол самого предмета. */
+  function drawSup(ctx, n, right, top, size, color) {
+    drawNumeral(ctx, n, right + size * 0.42, top + size * 0.05, size, color);
+  }
+
+  /* Одинаковые фигуры: тот же контур, те же круги и крутящиеся знаки,
+     тот же владелец. Такие лежат в хранилище одной стопкой со счётом. */
+  var sigMemo = typeof WeakMap === 'function' ? new WeakMap() : null;
+  function shapeSig(it, withMarks) {
+    var sn = (it.s ? it.s.length : 0) + '/' + (it.p ? it.p.length : 0);
+    var m = sigMemo && sigMemo.get(it);
+    if (!m || m.sn !== sn) {
+      var cells = it.c.map(function (q) { return q[0] + ',' + q[1]; }).sort().join(';');
+      var spins = (it.s || []).map(function (e) { return e.i + ':' + e.g; }).sort().join(',');
+      var marks = (it.p || []).slice().sort(function (a, b) { return a - b; }).join(',');
+      m = { sn: sn, base: (it.by || 'c') + '|' + cells + '|' + spins, full: '' };
+      m.full = m.base + '|' + marks;
+      if (sigMemo) sigMemo.set(it, m);
+    }
+    return withMarks ? m.full : m.base;
+  }
+  // список фигур -> стопки { item, n } в порядке первого появления
+  function stackShapes(list, withMarks) {
+    var groups = {}, out = [];
+    list.forEach(function (it) {
+      var key = shapeSig(it, withMarks), g = groups[key];
+      if (!g) { g = groups[key] = { item: it, n: 0 }; out.push(g); }
+      g.n++;
+    });
+    return out;
+  }
+
+  root.Numeral = { draw: drawNumeral, sup: drawSup };
 
   // --- содержимое --------------------------------------------------------------
 
@@ -262,15 +295,19 @@
     ctx.restore();
     ctx.save();
     glow(ctx, 'rgba(255,200,140,0.8)', S * 0.1);
-    drawNumeral(ctx, voids[by], x0 + S * 1.7, y + S / 2, S * 0.95, 'rgba(255,214,170,0.95)');
+    drawSup(ctx, voids[by], x0 + S * 0.72, y + S * 0.2, S * 0.5, 'rgba(255,214,170,0.95)');
     ctx.restore();
     y += S + gap * 1.4;
 
     for (var c = 0; c < ORDER.length; c++) {
       var kind = ORDER[c], rowH = 0, x = x0, started = false;
-      for (var n = 0; n < items.length; n++) {
-        var it = items[n];
-        if (it.k !== kind || (it.by || 'c') !== by) continue;
+      var list = [];
+      for (var q = 0; q < items.length; q++) {
+        if (items[q].k === kind && (items[q].by || 'c') === by) list.push(kind === 'shape' ? items[q] : { item: items[q], n: 1, at: q });
+      }
+      if (kind === 'shape') list = stackShapes(list, true);
+      for (var n = 0; n < list.length; n++) {
+        var it = list[n].item, cnt = list[n].n;
         if (!started) {
           started = true;
           var lg = ctx.createLinearGradient(x0, 0, x0 + colW, 0);
@@ -281,11 +318,21 @@
           ctx.fillRect(x0, y, colW, 1);
           y += gap * 1.4;
         }
-        var sz = itemSize(it, S);
-        if (x + sz.w > x0 + colW && x > x0) { x = x0; y += rowH + gap; rowH = 0; }
-        if (y + sz.h > 84 && y < vh) drawCached(ctx, it, n, x + sz.w / 2, y + sz.h / 2, S, t, sz);
-        x += sz.w + gap;
-        rowH = Math.max(rowH, sz.h);
+        var sz = itemSize(it, S), supW = cnt > 1 ? S * 0.55 : 0;
+        if (x + sz.w + supW > x0 + colW && x > x0) { x = x0; y += rowH + gap; rowH = 0; }
+        var top = y + (cnt > 1 ? S * 0.25 : 0);
+        if (top + sz.h > 84 && y < vh) {
+          drawCached(ctx, it, list[n].at === undefined ? n : list[n].at, x + sz.w / 2, top + sz.h / 2, S, t, sz);
+          if (cnt > 1) {
+            var u = S * 0.42;
+            ctx.save();
+            glow(ctx, 'rgba(255,200,140,0.8)', S * 0.08);
+            drawSup(ctx, cnt, x + sz.w / 2 + it.w * u / 2, top + sz.h / 2 - it.h * u / 2, S * 0.42, 'rgba(255,214,170,0.95)');
+            ctx.restore();
+          }
+        }
+        x += sz.w + supW + gap;
+        rowH = Math.max(rowH, sz.h + (top - y));
       }
       if (started) y += rowH + gap;
     }
@@ -314,7 +361,7 @@
   }
 
   root.Inventory = {
-    add: add, remove: remove, addShape: addShape, markShape: markShape, draw: draw,
+    add: add, remove: remove, addShape: addShape, stackShapes: stackShapes, markShape: markShape, draw: draw,
     /* Выброшенное существо уносит с собой всё, что сделало. */
     wipe: function (by) {
       items = items.filter(function (it) { return (it.by || 'c') !== by; });

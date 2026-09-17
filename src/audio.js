@@ -265,6 +265,7 @@
      Журнал корабля звучит не космосом, а машиной: гул вентилятора, сетевой
      фон, редкие щелчки реле, короткие писки и очереди данных. */
   function setParam(key, param, v, tau) {
+    if (!isFinite(v)) return;
     var last = lastParam[key];
     if (last !== undefined && Math.abs(last - v) <= Math.max(0.0005, Math.abs(v) * 0.03)) return;
     lastParam[key] = v;
