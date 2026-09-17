@@ -23,6 +23,7 @@
 
   root.Save = {
     key: KEY,
+    off: off,
     load: function () {
       if (off) return null;
       try {

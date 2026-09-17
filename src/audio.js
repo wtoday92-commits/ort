@@ -359,11 +359,35 @@
   }
 
   /* Звук включается только после первого действия игрока. */
+  /* Вызывается на каждое нажатие и прокрутку: звук мог уснуть (сон
+     компьютера, смена устройства вывода) и должен проснуться. Громкость
+     выставляется только в первый раз — иначе каждое колесо мыши добавляло
+     событие автоматизации, и они копились в звуковом движке. */
   function unlock() {
-    if (!ready && !init()) return;
-    if (ctx.state === 'suspended') ctx.resume();
-    if (!muted && !vacuumOn) master.gain.setTargetAtTime(0.5, now(), 1.2);
+    var fresh = !ready;
+    if (fresh && !init()) return;
+    if (ctx.state !== 'running' && ctx.state !== 'closed') ctx.resume();
+    if (fresh && !muted && !vacuumOn) master.gain.setTargetAtTime(0.5, now(), 1.2);
     if (pendingRoom) { var pr = pendingRoom; pendingRoom = null; API.room(pr); }
+  }
+
+  /* Тишина на время догона: когда вкладка долго была в фоне, игра досчитывает
+     минуты разом, и сотни одиночных звуков прозвучали бы в одно мгновение. */
+  var quietKeep = null;
+  var QUIET_ALLOW = { unlock: 1, toggle: 1, horizon: 1, frame: 1, room: 1, muffle: 1, quiet: 1 };
+  function quiet(on) {
+    if (on && !quietKeep) {
+      quietKeep = {};
+      Object.keys(API).forEach(function (k) {
+        var d = Object.getOwnPropertyDescriptor(API, k);
+        if (!d || typeof d.value !== 'function' || QUIET_ALLOW[k]) return;
+        quietKeep[k] = d.value;
+        API[k] = function () {};
+      });
+    } else if (!on && quietKeep) {
+      Object.keys(quietKeep).forEach(function (k) { API[k] = quietKeep[k]; });
+      quietKeep = null;
+    }
   }
 
   function ping(freq, dur, vol, type, detune) {
@@ -436,6 +460,7 @@
 
   var API = {
     unlock: unlock,
+    quiet: function (on) { quiet(on); },
     get ready() { return ready && ctx && ctx.state === 'running'; },
 
     toggle: function () {

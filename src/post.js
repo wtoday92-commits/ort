@@ -125,23 +125,37 @@
     return s;
   }
 
+  /* Постобработка переживает потерю WebGL-контекста (сон компьютера, сбой
+     драйвера): пока контекста нет, кадр просто не выводится, а когда он
+     вернётся, всё создаётся заново. Раньше экран оставался чёрным навсегда. */
   function Post(canvas) {
-    var gl = null;
+    var gl = null, self = this;
     try {
       gl = canvas.getContext('webgl', { alpha: false, antialias: false, depth: false })
         || canvas.getContext('experimental-webgl', { alpha: false, depth: false });
     } catch (e) { gl = null; }
     if (!gl) { this.ok = false; return; }
+    this.gl = gl;
+    this.lost = false;
+    this.ok = this.setup();
+    canvas.addEventListener('webglcontextlost', function (e) { e.preventDefault(); self.lost = true; }, false);
+    canvas.addEventListener('webglcontextrestored', function () { self.lost = !self.setup(); }, false);
+    // помехи приходят редкими короткими вспышками, а не ровным шумом
+    this.burst = 0;
+    this.nextBurst = 3 + Math.random() * 9;
+  }
 
+  Post.prototype.setup = function () {
+    var gl = this.gl;
     var vs = compile(gl, gl.VERTEX_SHADER, VERT);
     var fs = compile(gl, gl.FRAGMENT_SHADER, FRAG);
-    if (!vs || !fs) { this.ok = false; return; }
+    if (!vs || !fs) return false;
 
     var prog = gl.createProgram();
     gl.attachShader(prog, vs); gl.attachShader(prog, fs);
     gl.bindAttribLocation(prog, 0, 'p');
     gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { this.ok = false; return; }
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return false;
 
     var buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -157,28 +171,16 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
 
-    this.ok = true;
-    this.gl = gl;
     this.prog = prog;
     this.tex = texture;
-    this.u = {
-      tex: gl.getUniformLocation(prog, 'tex'),
-      res: gl.getUniformLocation(prog, 'res'),
-      time: gl.getUniformLocation(prog, 'time'),
-      burst: gl.getUniformLocation(prog, 'burst'),
-      bulge: gl.getUniformLocation(prog, 'bulge'),
-      chroma: gl.getUniformLocation(prog, 'chroma'),
-      tear: gl.getUniformLocation(prog, 'tear'),
-      scaleOut: gl.getUniformLocation(prog, 'scaleOut'),
-      blurAmt: gl.getUniformLocation(prog, 'blurAmt'),
-      lids: gl.getUniformLocation(prog, 'lids'),
-      edge: gl.getUniformLocation(prog, 'edge'),
-      dark: gl.getUniformLocation(prog, 'dark')
-    };
-    // помехи приходят редкими короткими вспышками, а не ровным шумом
-    this.burst = 0;
-    this.nextBurst = 3 + Math.random() * 9;
-  }
+    this.tw = this.th = 0;            // текстура новая: память выделится заново
+    this.u = {};
+    var self = this;
+    ['tex', 'res', 'time', 'burst', 'bulge', 'chroma', 'tear', 'scaleOut', 'blurAmt', 'lids', 'edge', 'dark'].forEach(function (n) {
+      self.u[n] = gl.getUniformLocation(prog, n);
+    });
+    return true;
+  };
 
   /* Возвращает силу вспышки помех: её же слышно в звуке. */
   Post.prototype.step = function (dt) {
@@ -194,8 +196,9 @@
 
   Post.prototype.render = function (scene, time, tear, fx) {
     fx = fx || {};
-    if (!this.ok) return;
+    if (!this.ok || this.lost) return;
     var gl = this.gl;
+    if (gl.isContextLost()) return;
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.useProgram(this.prog);
     gl.bindTexture(gl.TEXTURE_2D, this.tex);

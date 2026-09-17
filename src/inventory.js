@@ -67,9 +67,22 @@
 
   // --- содержимое --------------------------------------------------------------
 
+  /* Хранилище не бесконечно: у каждого владельца не больше CAP предметов.
+     Существо работает сутками в фоновой вкладке, и без предела хранилище
+     разрасталось до тысяч предметов — сохранение и отрисовка тяжелели.
+     Уходит самое старое, фигуры — в последнюю очередь. */
+  var CAP = 700;
   function add(it) {
     if (!it.by) it.by = 'c';
     items.push(it);
+    var mine = 0, oldest = -1, oldestAny = -1;
+    for (var i = 0; i < items.length; i++) {
+      if ((items[i].by || 'c') !== it.by) continue;
+      mine++;
+      if (oldestAny < 0) oldestAny = i;
+      if (oldest < 0 && items[i].k !== 'shape') oldest = i;
+    }
+    if (mine > CAP) items.splice(oldest >= 0 ? oldest : oldestAny, 1);
     dirty = true; fresh = 1;
     return it;
   }

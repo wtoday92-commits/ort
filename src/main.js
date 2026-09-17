@@ -262,6 +262,8 @@
   /* Отправка: слепок выделенных глифов улетает в папку сбора. */
   function clickButton() {
     if (sel !== SEL.CONFIRM) return;
+    // папка сбора полна: сверх девяти единиц работа не принимается
+    if (unitsAt(0).length >= FOLDER_CAP) { S.reject(); reject = 0.6; folderFlare[PHASE.COLLECT] = 1; abort(); return; }
     var snap = F.snapshot(vw, vh, rect);
     // клетки уникального объекта забирает только сбор самого объекта
     var objId = startAnchor && startAnchor.rec.obj ? startAnchor.rec.obj : 0;
@@ -513,10 +515,12 @@
     stageRun(PHASE.ANALYZE);
     slips = 0;
     chains = [];
-    var pend = unitsAt(0);
-    for (var i = 0; i < Math.min(4, pend.length); i++) {
+    var pend = unitsAt(0), room = FOLDER_CAP - unitsAt(1).length;
+    for (var i = 0; i < Math.min(4, pend.length, room); i++) {
       var nodes = chainFor(pend[i]);
-      if (!nodes) continue;
+      /* Цепочку для единицы не нашли: она проходит анализ сама. Иначе она
+         навсегда оставалась в папке, и существо без конца звало анализ. */
+      if (!nodes) { pend[i].stage = 1; pend[i].bad = pend[i].bad || {}; syncFolders(); continue; }
       pend[i].chain = nodes;
       pend[i].map = mapId;
       chains.push({ nodes: nodes, at: 0, miss: 0, done: false, unit: pend[i] });
@@ -873,10 +877,13 @@
        числе, а недостающие дубли прилетают из папки. Требовать, чтобы вся
        группа лежала на поле готовой, оказалось неудобно: такие места редки, и
        блок выходил вымученным. */
+    // папка сортировки полна: доска не строится, пока её не разберут дальше
+    var room = FOLDER_CAP - unitsAt(2).length;
+    if (room <= 0) { S.reject(); reject = 0.6; folderFlare[PHASE.SORT] = 1; return; }
     var gid = pend[0].gid;
     var gids = [gid];
     sortUnits = [pend[0]];
-    for (var i = 1; i < pend.length && gids.length < 3; i++) {
+    for (var i = 1; i < pend.length && gids.length < Math.min(3, room); i++) {
       if (gids.indexOf(pend[i].gid) < 0) { gids.push(pend[i].gid); sortUnits.push(pend[i]); }
     }
 
@@ -2072,7 +2079,7 @@
 
   /* Шкала серых точек под лорными папками: ошибки, накопленные на навигации. */
   // шкала лежит левее первой папки, на её высоте; свежие точки ближе к папке
-  function scalePos(i, n) { return { x: vw / 2 - 212 - (n - 1 - i) * 15, y: vh - 58 }; }
+  function scalePos(i, n) { return { x: Math.max(14 + i * 15, vw / 2 - 212 - (n - 1 - i) * 15), y: vh - 58 }; }
 
   function drawScale(sc) {
     if (!sc) return;
@@ -2625,6 +2632,7 @@
   /* Шаг симуляции отделён от отрисовки: так логику можно прогнать без кадров
      и без рендера, что нужно и для проверок, и при скрытой странице. */
   function simulate(dt) {
+    if (passive) return;
     t += dt;
     hand.slow = handSlow();
     tearFx = tearPulse;
@@ -2802,6 +2810,16 @@
     }
     if (!(post && post.ok) && tearFx > 0.02) drawTearFallback();
     drawOldFx();
+    if (passive) {
+      // эта вкладка уступила место другой
+      ctx.save();
+      ctx.fillStyle = 'rgba(4,3,2,0.82)';
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.translate(vw / 2, vh / 2);
+      ctx.strokeStyle = 'rgba(255,158,58,' + (0.25 + 0.15 * Math.sin(t * 1.2)).toFixed(3) + ')';
+      G.drawGlyph(ctx, 90, 46, 1.6);
+      ctx.restore();
+    }
 
     if (post && post.ok) post.render(scene, t, tearFx, { scale: ejectFx.scale, blur: ejectFx.blur, lids: ejectFx.lids, edge: Math.max(ejectFx.edge, edgePulse), dark: ejectFx.dark });
   }
@@ -2832,6 +2850,8 @@
        без конца и мешало существу. */
     function pointerOut() { pointerIn = false; pressed = false; }
     window.addEventListener('blur', pointerOut);
+    // звук мог уснуть: каждое нажатие будит его снова
+    window.addEventListener('pointerdown', function () { S.unlock(); });
     document.addEventListener('mouseleave', pointerOut);
     document.documentElement.addEventListener('pointerleave', pointerOut);
     document.addEventListener('visibilitychange', function () { if (document.hidden) pointerOut(); });
@@ -2975,8 +2995,32 @@
   }
 
   var saveT = 0, navSaveT = 0;
+
+  /* Игра открыта в двух вкладках — сохраняет только самая новая. Иначе они
+     по очереди перезаписывали бы друг друга, и прогресс откатывался. Старая
+     вкладка засыпает: не считает, не пишет и гаснет. */
+  var tabId = Math.random().toString(36).slice(2), tabAt = Date.now(), passive = false, ownT = 0;
+  function ownerKey() { return root.Save.key + '.owner'; }
+  function checkOwner() {
+    if (passive || root.Save.off) return;
+    try {
+      var o = JSON.parse(root.localStorage.getItem(ownerKey()) || 'null');
+      if (o && o.id !== tabId && o.at > tabAt && Date.now() - o.beat < 8000) { passive = true; S.quiet(true); return; }
+      root.localStorage.setItem(ownerKey(), JSON.stringify({ id: tabId, at: tabAt, beat: Date.now() }));
+    } catch (e) {}
+  }
+
   function persist() {
-    var data = { v: 1, lore: LORE.serialize(), inv: INV.serialize(), life: { age: Math.round(age), tut: tut } };
+    if (passive) return;
+    var data = { v: 1, lore: LORE.serialize(), inv: INV.serialize(), life: {
+      age: Math.round(age), tut: tut,
+      // шкала изъяна, отказы в перерывах и начатый выброс переживают перезагрузку:
+      // иначе перезагрузкой можно было увернуться от выброса
+      drift: drift, floor: driftFloor, ld: lunchDenied, sd: sleepDenied,
+      ej: eject && !eject.reset ? eject.reason : null,
+      // содержимое навигационных папок
+      stock: stock, mapId: mapId
+    } };
     // навигационная карта тоже помнится: разложенные группы, пустоты, следы
     var nav = panel === 0 ? F.saveWorld() : navWorld;
     if (nav && ctrl()) data.nav = F.worldToJSON(nav);
@@ -2985,11 +3029,15 @@
     LORE.clean(); INV.clean();
   }
   function stepSave(dt) {
+    ownT -= dt;
+    if (ownT <= 0) { ownT = 2; checkOwner(); }
     saveT += dt; navSaveT += dt;
     if (saveT < 10) return;
     saveT = 0;
     if (LORE.dirty || INV.dirty || navSaveT >= 30) { navSaveT = 0; persist(); }
   }
+
+  var navLoaded = false;
 
   function start() {
     canvas = document.getElementById('v');
@@ -3015,7 +3063,7 @@
     if (saved && saved.life) { age = +saved.life.age || 0; tut = saved.life.tut || null; }
     else if ((!saved && INTRO_FULL) || /[?&]tut\b/.test(location.search)) tut = { play: 0, cycles: 0, t3: 0, anaErr: false };
     if (saved && saved.nav) {
-      try { F.loadWorld(F.worldFromJSON(saved.nav)); F.pruneObjects(); }
+      try { F.loadWorld(F.worldFromJSON(saved.nav)); F.pruneObjects(); navLoaded = true; }
       catch (e) { F.loadWorld(F.freshWorld({ w: NAV_W, h: NAV_W, seed: 0x5f3a71, zoom: 1 })); }
     }
     /* Полная заставка — только при самом первом запуске. Если сохранение уже
@@ -3263,8 +3311,25 @@
       };
     }
     last = performance.now();
+    restoreLife(saved && saved.life);
+    checkOwner();
     startBackground();
     requestAnimationFrame(frame);
+  }
+
+  function restoreLife(l) {
+    if (!l) return;
+    drift = +l.drift || 0; driftFloor = +l.floor || 0;
+    lunchDenied = l.ld | 0; sleepDenied = l.sd | 0;
+    if (Array.isArray(l.stock)) {
+      stock = l.stock.filter(function (u) { return u && typeof u.stage === 'number'; });
+      mapId = l.mapId | 0;
+      // карта не восстановилась — цепочки единиц относятся к чужой карте
+      if (!navLoaded) mapId++;
+      syncFolders();
+    }
+    // выброс был начат — он продолжится
+    if (l.ej && !tut) endCycle(l.ej);
   }
 
   /* В фоновой вкладке (и в окне, закрытом другими) браузер не зовёт
@@ -3274,12 +3339,26 @@
      если кадров нет дольше 0.4 с, он сам досчитывает прошедшее время.
      Рисовать в скрытой вкладке незачем, считается только работа. */
   var lastSimAt = 0;
+  /* Догон идёт порциями, не дольше 25 мс за раз: после сна компьютера
+     пять минут разом замораживали вкладку. Пока отстаём больше чем на пару
+     секунд, одиночные звуки молчат. */
+  var simDebt = 0;
   function backgroundTick() {
     var nowMs = performance.now();
-    if (nowMs - lastSimAt < 400) return;
-    var el = Math.min(300, (nowMs - lastSimAt) / 1000);
-    lastSimAt = nowMs;
-    while (el > 0) { var d = Math.min(0.05, el); simulate(d); el -= d; }
+    if (nowMs - lastSimAt >= 400) {
+      simDebt = Math.min(300, simDebt + (nowMs - lastSimAt) / 1000);
+      lastSimAt = nowMs;
+    }
+    if (simDebt <= 0) return;
+    var hush = simDebt > 2;
+    if (hush) S.quiet(true);
+    var t0 = performance.now();
+    while (simDebt > 0 && performance.now() - t0 < 25) {
+      var d = Math.min(0.05, simDebt);
+      simulate(d);
+      simDebt -= d;
+    }
+    if (hush) S.quiet(false);
   }
   function startBackground() {
     // вкладка могла открыться сразу в фоне, без единого кадра

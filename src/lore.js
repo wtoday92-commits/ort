@@ -59,7 +59,7 @@
   // шанс срыва шкалы, когда она доходит до этой точки
   var CRASH_P = { 7: 0.15, 8: 0.35, 9: 0.6, 10: 0.92, 11: 0.98, 12: 1 };
   var stats = { errors: 0, denied: 0, loreTime: 0, objects: 0 };
-  var blocks = [], ship = [];
+  var blocks = [], ship = [], shipSeq = 0;
   var journal = { open: false, scroll: 0, fresh: 0, k: 0, max: 0, sel: null, hits: [] };
   var marks = new Map();
   var ses = null;                         // этап, который сейчас идёт
@@ -600,8 +600,6 @@
     if (s.stage === 2) file[1] = Math.min(LCAP, file[1] + s.spent);
     if (s.stage === 3) {
       file[2] = Math.min(LCAP, file[2] + s.spent);
-      // потраченные камертоны возвращаются в хранилище: начатое откатывается
-      s.spentItems.forEach(function (it) { INV().add(it); });
     }
     if (s.stage === 4 && s.done < 0) file[3] = Math.min(LCAP, file[3] + s.spent);
     endSession();
@@ -910,7 +908,8 @@
     var s = ses, w = wordOf(k);
     if (!open3(w)) { reject(0.3); entry.shake = 0.45; return; }
     entry.used = true;
-    if (entry.item) { INV().remove(entry.item); s.spentItems.push(entry.item); }
+    // сам якорь уходит из хранилища, когда этап закончен: выход или перезагрузка его не сжигают
+    if (entry.item) s.spentItems.push(entry.item);
     w.heard = now; w.from = w.c.indexOf(k); w.kind = entry.kind; w.rung = 0;
     var p = cellXY(s.bl, k);
     env.pulse(p.x, p.y, true);
@@ -964,6 +963,7 @@
   function completeWords() {
     var s = ses, bl = s.bl, to = env.folderPos(3), n = s.words.length;
     bl.words = s.words.map(function (w) { return w.c; });
+    s.spentItems.forEach(function (it) { INV().remove(it); });
     s.words.forEach(function (w, i) {
       var p = cellXY(bl, w.c[0]);
       fly(p.x, p.y, to.x, to.y - 8, { d: i * 0.1, done: function () { flare[3] = 1; S.tick(i, n); } });
@@ -1959,7 +1959,7 @@
     if (journal.k < 0.01) return;
     var v = env.view(), dpr = Math.min(2, root.devicePixelRatio || 1);
     var selBl = journal.sel ? blockById(journal.sel) : null;
-    var key = [v.w, v.h, dpr, Math.round(journal.scroll), journal.sel, ship.length, creatureNo, ejectedNo,
+    var key = [v.w, v.h, dpr, Math.round(journal.scroll), journal.sel, shipSeq, creatureNo, ejectedNo,
       blocks.filter(function (b) { return b.stage >= 5 && b.inJ; }).map(function (b) { return b.id; }).join(','),
       selBl ? haveGlyph(selBl.pin) : ''].join('|');
     if (!jCanvas) jCanvas = document.createElement('canvas');
@@ -2079,6 +2079,8 @@
         b.stage = 0; b.tiles = [];
         errs = Math.min(ERR_CAP, errs + file[0]); file[0] = 0;
       });
+      // точки в первой папке без выбранной записи возвращаются в шкалу
+      if (file[0] > 0 && !current()) { errs = Math.min(ERR_CAP, errs + file[0]); file[0] = 0; }
       // начатая запись сразу открывает свой этап
       var w = current();
       if (w) folderClick(slotOf(w.stage));
@@ -2162,6 +2164,7 @@
       var w = T.ship[kind];
       if (!w) return;
       ship.push({ kind: kind, words: w });
+      shipSeq++;
       if (ship.length > 40) ship.shift();
       dirty = true;
     },
@@ -2203,7 +2206,16 @@
         logs[b.id] = { stage: b.stage, cells: b.cells, tiles: b.tiles, targets: b.targets, restored: b.restored, dots: b.dots, num: b.num, ejn: b.ejn, words: b.words, sec: b.sec, draft: b.draft, pin: b.pin, inJ: b.inJ };
       });
       else if (saved) logs = saved;
-      return { v: 2, errs: errs, file: file.slice(), creature: creatureNo, ejects: ejects, ejected: ejectedNo, lives: lives, sector: sector, ejectSector: ejectSector,
+      /* Перезагрузка посреди этапа — то же, что выход из него: ячейки, взятые
+         этапом, возвращаются. Раньше они сгорали, и запись застревала. */
+      var eOut = errs, fOut = file.slice(), s = ses;
+      if (s && !s.choose) {
+        if (s.stage === 0 || (s.stage === 1 && !s.placed.length)) { eOut = Math.min(ERR_CAP, eOut + fOut[0]); fOut[0] = 0; }
+        if (s.stage === 2) fOut[1] = Math.min(LCAP, fOut[1] + s.spent);
+        if (s.stage === 3) fOut[2] = Math.min(LCAP, fOut[2] + s.spent);
+        if (s.stage === 4 && s.done < 0) fOut[3] = Math.min(LCAP, fOut[3] + s.spent);
+      }
+      return { v: 2, errs: eOut, file: fOut, creature: creatureNo, ejects: ejects, ejected: ejectedNo, lives: lives, sector: sector, ejectSector: ejectSector,
         stats: stats, layout: layout, objs: objInst, objRead: objRead, objLost: objLost, objFlags: objFlags, objUid: objUid, ship: ship.slice(-40).map(function (s) { return s.kind; }), logs: logs };
     },
     load: function (d) {
