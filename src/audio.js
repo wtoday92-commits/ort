@@ -864,6 +864,32 @@
       ping(BASE * (1.07 + Math.random() * 0.2), 0.4, 0.015 + 0.03 * k, 'triangle', 23);
     },
 
+    /* Камертон: у каждой повадки свой тон, и он тянется, пока слова звучат.
+       Тот же набор негармоничных интервалов, что и у якоря под курсором на
+       карте, — повадку слышно раньше, чем удаётся разглядеть. */
+    tuning: function (kind, dur) {
+      if (!ready || muted) return;
+      var f = BASE * [1, 1.37, 0.78, 1.78, 2.41][(kind || 0) % 5];
+      var d = dur || 6;
+      var t = now(), o = ctx.createOscillator(), o2 = ctx.createOscillator(), g = ctx.createGain();
+      o.type = 'triangle'; o.frequency.value = f;
+      o2.type = 'sine'; o2.frequency.value = f * 2.006;   // лёгкие биения, как у вилки
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(0.055, t + 0.12);
+      g.gain.setValueAtTime(0.055, t + d * 0.55);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+      o.connect(g); o2.connect(g); g.connect(room);
+      o.start(t); o2.start(t); o.stop(t + d + 0.05); o2.stop(t + d + 0.05);
+      ping(f * 4.01, 0.18, 0.02, 'sine');
+    },
+
+    /* Слово закрепилось: короткий чистый отклик той же повадки. */
+    wordLock: function (kind) {
+      var f = BASE * [1, 1.37, 0.78, 1.78, 2.41][(kind || 0) % 5];
+      ping(f * 2, 0.5, 0.05, 'triangle');
+      ping(f * 3.01, 0.3, 0.02, 'sine');
+    },
+
     /* Слог встал в предложение: тихий щипок струны. */
     pluck: function (i) {
       var f = BASE * [1.37, 1.78, 2.41][(i || 0) % 3] * 1.5;
