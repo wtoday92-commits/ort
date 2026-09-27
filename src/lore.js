@@ -969,6 +969,172 @@
     return wordPlan(bl);
   }
 
+  /* --- мелкое поле разметки слов --------------------------------------------- */
+
+  /* На время третьего этапа внутренность записи сменяется полем ВТРОЕ мельче:
+     на месте каждой клетки оказывается девять. Знаков становится в девять раз
+     больше, и слова приходится именно ИСКАТЬ, водя курсором, а не перебирать
+     всё подряд: раньше знаков было два десятка, и игрок просто выделял все.
+     Сама запись остаётся того же размера, круги-разделители и границы фигур
+     стоят где стояли. Колесо приближает поле вместе с записью, как везде.
+
+     Смена вида идёт помехой-линией, пробегающей по записи снизу вверх или
+     сверху вниз (направление выбирается случайно), и тем же способом вид
+     возвращается обратно, когда слова размечены. */
+
+  var FINE = 3;                          // во сколько раз мельче клетки разметки
+  var SWEEP_T = 1.15;                    // сколько бежит помеха-линия
+  var SHRINK_T = 1.0;                    // за сколько знаки садятся в своих клетках
+  var SHRINK_TO = 0.7;                   // и насколько: вокруг знака нужен воздух
+
+  function fineW(bl) { return bl.w * FINE; }
+  function fineH(bl) { return bl.h * FINE; }
+  function fineSize() { return F.CELL / FINE; }
+
+  function finePos(bl, k) {
+    var o = org(bl), c = fineSize(), w = fineW(bl);
+    return { x: o.x + (k % w + 0.5) * c, y: o.y + (((k / w) | 0) + 0.5) * c };
+  }
+  function fineAt(bl, x, y) {
+    var o = org(bl), c = fineSize(), w = fineW(bl);
+    var fx = Math.floor((x - o.x) / c), fy = Math.floor((y - o.y) / c);
+    if (fx < 0 || fy < 0 || fx >= w || fy >= fineH(bl)) return -1;
+    return fy * w + fx;
+  }
+  // в какой клетке записи лежит мелкая клетка
+  function coarseOf(bl, k) {
+    var w = fineW(bl);
+    return (((((k / w) | 0) / FINE) | 0) * bl.w) + ((((k % w) / FINE) | 0));
+  }
+  function fineGid(bl, k) {
+    var w = fineW(bl), fx = k % w, fy = (k / w) | 0;
+    for (var i = 0; i < 40; i++) {
+      var g = G.hash3(bl.ox * FINE + fx + i * 37, bl.oy * FINE + fy, 0x3b9a) % G.COUNT;
+      if (g !== F.VOID_GID && !G.isParasite(g)) return g;
+    }
+    return 1;
+  }
+
+  /* Под кругом-разделителем и под восстановленным знаком мелкого письма нет:
+     эти метки принадлежат записи и должны читаться целиком. */
+  function fineBlocked(bl, k) {
+    var c = coarseOf(bl, k);
+    return bl.dots.indexOf(c) >= 0 || !!bl.restored[c];
+  }
+
+  /* Слова растаскиваются по предложению. Иначе они могли бы случайно сойтись в
+     одном углу, и поиск терял бы смысл: найдя два слова до точки, игрок вправе
+     решить, что дальше там пусто, и уйти искать за неё. */
+  function planFine(bl, plan, rnd2) {
+    var w = fineW(bl), out = [], bySent = {}, sents = sentences(bl);
+    plan.forEach(function (p, i) { (bySent[p.s] = bySent[p.s] || []).push(i); });
+    Object.keys(bySent).forEach(function (sk) {
+      var si = +sk, list = bySent[sk], own = {};
+      (sents[si] || []).forEach(function (c) { own[c] = 1; });
+      // все мелкие клетки предложения в порядке чтения
+      var all = [], fy, fx;
+      for (fy = 0; fy < fineH(bl); fy++) {
+        for (fx = 0; fx < w; fx++) {
+          var k = fy * w + fx;
+          if (own[coarseOf(bl, k)] && !fineBlocked(bl, k)) all.push(k);
+        }
+      }
+      if (!all.length) return;
+      /* Предложение режется на столько долей, сколько в нём слов, и каждое
+         слово встаёт в СВОЮ долю. Иначе слова могли бы случайно сойтись в
+         одном углу, и поиск терял бы смысл: найдя два слова до точки, игрок
+         вправе решить, что дальше там пусто, и уйти искать за неё. */
+      var slice = all.length / list.length;
+      list.forEach(function (wi, j) {
+        var len = clamp(plan[wi].c.length + 1, 2, 4);
+        var lo = Math.floor(j * slice), hi = Math.floor((j + 1) * slice);
+        var run = pickRun(all, lo, hi, len, w, rnd2) || pickRun(all, 0, all.length, len, w, rnd2);
+        out[wi] = run || all.slice(0, Math.min(len, all.length));
+      });
+    });
+    plan.forEach(function (p, i) { if (!out[i]) out[i] = [0, 1]; });
+    return out;
+  }
+
+  /* Горизонтальный отрезок нужной длины внутри доли: по слову должно быть
+     удобно провести курсором одним движением. */
+  function pickRun(all, lo, hi, len, w, rnd2) {
+    var cands = [], p, q, ok;
+    for (p = lo; p + len <= hi; p++) {
+      ok = true;
+      for (q = 1; q < len && ok; q++) {
+        if (all[p + q] !== all[p + q - 1] + 1 || ((all[p + q] / w) | 0) !== ((all[p] / w) | 0)) ok = false;
+      }
+      if (ok) cands.push(p);
+    }
+    if (!cands.length) return null;
+    var at = cands[Math.floor(rnd2() * cands.length)];
+    return all.slice(at, at + len);
+  }
+
+  /* Движение мелкого знака — то же, что у поля: связное качание, дыхание и
+     волна от курсора. Слово обязано выдавать себя ПОВАДКОЙ, а не тем, что оно
+     единственное шевелится среди неподвижных. */
+  function stepFine(s, dt) {
+    var bl = s.bl, w = fineW(bl), n = w * fineH(bl), P = env.pointer;
+    var c = fineSize(), zs = c / F.BASE, amp = 3.6 * zs;
+    var wr = F.WAVE_R * Math.min(1.4, Math.max(0.6, zs));
+    var lag = F.lagV, out = s._out || (s._out = {});
+    var cx = P ? P.x : -1e5, cy = P ? P.y : -1e5;
+    if (!s.fine || s.fine.length !== n) {
+      s.fine = [];
+      for (var q = 0; q < n; q++) s.fine.push({ s: 1, ox: 0, oy: 0, rot: 0 });
+    }
+    for (var k = 0; k < n; k++) {
+      var st = s.fine[k];
+      if (s.blocked[k]) { st.hide = 1; continue; }
+      st.hide = 0;
+      var fx = k % w, fy = (k / w) | 0;
+      var ph = (F.vnoise(fx / 21, fy / 21, F.SEED + 6) * 0.86 + G.rand3(fx, fy, F.SEED + 1) * 0.14) * Math.PI * 2;
+      var rt = 0.24 + F.vnoise(fx / 27, fy / 27, F.SEED + 8) * 0.22 + G.rand3(fx, fy, F.SEED + 2) * 0.05;
+      out.breath = 1; out.lag = 0; out.waveMul = 1;
+      out.rise = 0; out.fall = 0; out.evade = 0;
+      out.breathFreeze = 0; out.kick = 0; out.rot = 1; out.ph = ph;
+      var wd = s.byCell[k];
+      if (wd !== undefined) {
+        var word = s.words[wd];
+        if (word.live && !word.done) F.behave(word.kind, out, ringNow(word.kind) ? BEH_RING : BEH_IDLE);
+      }
+      var bt = out.breathFreeze ? Math.floor(now * 1.6) / 1.6 : now;
+      var ox = Math.sin(bt * rt * 2 * Math.PI * 0.16 + ph) * amp * out.breath;
+      var oy = Math.cos(bt * rt * 2 * Math.PI * 0.13 + ph * 1.7) * amp * out.breath;
+      if (out.kick) ox += Math.sin(ph * 5.1) * out.kick * zs * 2.4;
+      if (out.lag) { ox -= lag.x * out.lag * zs; oy -= lag.y * out.lag * zs; }
+      var rot = Math.sin(bt * rt * 2 * Math.PI * 0.11 + ph) * 0.125 * out.rot;
+      var px = finePos(bl, k), sx = px.x + ox, sy = px.y + oy;
+      var dx = sx - cx, dy = sy - cy, d = Math.sqrt(dx * dx + dy * dy) || 1e-4;
+      if (out.evade && d < wr) {
+        var push = Math.pow(1 - d / wr, 1.5) * 32 * zs * out.evade * Math.min(1, s.spd / 380);
+        sx += dx / d * push; sy += dy / d * push;
+        dx = sx - cx; dy = sy - cy; d = Math.sqrt(dx * dx + dy * dy) || 1e-4;
+      }
+      var f = d < wr ? Math.pow(1 - d / wr, 2.1) : 0;
+      var tgt = 1 + f * F.WAVE_A * out.waveMul;
+      var kk = tgt > st.s ? (out.rise || 9.5) : (out.fall || 9.5);
+      st.s += (tgt - st.s) * Math.min(1, dt * kk);
+      st.ox = sx - px.x; st.oy = sy - px.y; st.rot = rot;
+    }
+  }
+
+  /* Помеха-линия: вид записи сменяется не разом, а полосой, пробегающей по ней. */
+  function sweepY(s, bl) {
+    if (!s.sweep) return null;
+    var r = rectOf(bl), u = clamp((now - s.sweep.t0) / SWEEP_T, 0, 1);
+    var e = u * u * (3 - 2 * u);
+    return { y: s.sweep.dir > 0 ? r.y0 + (r.y1 - r.y0) * e : r.y1 - (r.y1 - r.y0) * e, u: u, dir: s.sweep.dir };
+  }
+  // прошла ли помеха эту точку: позади неё уже новый вид
+  function swept(s, bl, y) {
+    var sw = sweepY(s, bl);
+    if (!sw) return true;
+    return sw.dir > 0 ? y < sw.y : y > sw.y;
+  }
+
   function startWords(bl) {
     if (file[2] < 1) { reject(); flare[2] = 1; return; }
     var plan = wordPlan(bl);
@@ -976,97 +1142,155 @@
     focus(bl, 1.9);
     var spent = file[2];
     file[2] = 0;
-    var words = plan.map(function (w) {
-      return { s: w.s, tis: w.tis.slice(), c: w.c.slice(), kind: w.kind, done: false, doneAt: 0 };
-    });
-    // камертонов меньше, чем слов: часть повадок игрок разбирает сам
-    var cap = Math.max(1, Math.min(4, words.length - 2));
-    var menu = invList('glyph').slice(0, cap).map(function (it, i) {
+
+    var seed = (bl.ox * 7349 + bl.oy * 911 + plan.length) >>> 0;
+    var rnd2 = rng32(seed);
+    var fine = planFine(bl, plan, rnd2);
+
+    /* Камертоны. Часть слов ЗАПЕРТА: их знаки стоят мёртво, повадки у них нет,
+       и даже верно обведённое запертое слово считается ошибкой. Чтобы его
+       открыть, надо найти в записи знак, в точности повторяющий знак из меню,
+       и перенести камертон на него. Тогда слово оживает и ведёт себя как якорь
+       той повадки, какая была у камертона. Так меню обязательно к делу: без
+       него этап не пройти, а ошибиться и потерять камертон можно — он уходит
+       на любой знак, на который его уронили. */
+    var menu = invList('glyph').map(function (it, i) {
       return { g: it.g, item: it, kind: it.kind !== undefined ? it.kind : G.hash3(it.g, 5, 77) % 5,
                used: false, shake: 0, i0: i };
     });
-    ses = { stage: 3, bl: bl, words: words, menu: menu, spent: spent, spentItems: [],
-            sel: null, bad: null, ring: null, tap: null, scroll: 0 };
+    /* Запертых слов на одно меньше, чем камертонов: один остаётся про запас,
+       чтобы одна ошибка не заперла этап намертво. Совсем без запаса — только
+       когда камертон всего один. Да и выход из этапа возвращает потраченные. */
+    var lockN = menu.length >= 2
+      ? Math.min(menu.length - 1, Math.floor(plan.length / 2))
+      : Math.min(menu.length, Math.floor(plan.length / 2));
+    menu = menu.slice(0, Math.min(menu.length, lockN + 2));
+
+    var words = [], byCell = {}, over = {}, li = 0;
+    plan.forEach(function (p, i) {
+      var cells = fine[i] || [];
+      // запираются слова вразбивку, чтобы поиск на глаз и поиск знаком чередовались
+      var lock = li < lockN && (i % 2 === 1 || plan.length - i <= lockN - li);
+      var ent = lock ? menu[li++] : null;
+      var w = { wi: i, cells: cells, kind: ent ? ent.kind : p.kind,
+                locked: !!ent, live: !ent, key: ent ? cells[0] : -1,
+                done: false, doneAt: 0 };
+      if (ent && cells.length) over[cells[0]] = ent.g;
+      cells.forEach(function (k) { byCell[k] = words.length; });
+      words.push(w);
+    });
+
+    /* Начертания мелкого поля и закрытые клетки считаются один раз: иначе на
+       каждый кадр приходилось бы по нескольку тысяч хешей. */
+    var fn = fineW(bl) * fineH(bl), gids = [], blocked = [], fk;
+    for (fk = 0; fk < fn; fk++) {
+      var bk = fineBlocked(bl, fk);
+      blocked.push(bk);
+      gids.push(bk ? 0 : fineGid(bl, fk));
+    }
+
+    ses = { stage: 3, bl: bl, plan: plan, words: words, byCell: byCell, over: over,
+            gids: gids, blocked: blocked,
+            menu: menu, spent: spent, spentItems: [],
+            sel: null, bad: null, ring: null, tap: null, drag: null,
+            sweep: { dir: Math.random() < 0.5 ? 1 : -1, t0: now, back: false },
+            shrink: 1, spd: 0, px: 0, py: 0, fine: null, scroll: 0 };
+    S.glitch();
     btnReset();
   }
 
   function cellsAbs(bl, list) { return list.map(function (k) { return [k % bl.w, (k / bl.w) | 0]; }); }
-
-  function wordOf(k) {
-    var ws = ses.words;
-    for (var i = 0; i < ws.length; i++) if (ws[i].c.indexOf(k) >= 0) return ws[i];
-    return null;
-  }
 
   function ringNow(kind) { return !!(ses.ring && ses.ring.kind === kind && now - ses.ring.t < RING_T); }
 
   /* Камертон потрачен: вся его повадка в записи звучит во весь голос. Сам якорь
      уходит из хранилища, только когда этап закончен: выход и перезагрузка его
      не сжигают. */
-  function strike(entry) {
-    var s = ses;
-    if (entry.used) { reject(0.3); entry.shake = 0.45; return; }
+  function burn(entry) {
     entry.used = true;
-    if (entry.item) s.spentItems.push(entry.item);
-    s.ring = { kind: entry.kind, t: now };
-    S.tuning(entry.kind, RING_T);
+    if (entry.item) ses.spentItems.push(entry.item);
+  }
+
+  /* Камертон уронили на знак записи. Попал в тот самый — слово оживает и
+     звучит; не в тот — камертон потерян. */
+  function dropTuner(entry, k) {
+    var s = ses;
+    if (k < 0) { S.nothing(); return; }                 // мимо записи: вернулся в меню
+    var hit = -1;
+    for (var i = 0; i < s.words.length; i++) {
+      var w = s.words[i];
+      if (w.locked && !w.live && w.key === k && s.over[k] === entry.g) { hit = i; break; }
+    }
+    burn(entry);
+    if (hit < 0) { reject(0.5); env.shake(0.3); entry.shake = 0.5; return; }
+    var w2 = s.words[hit];
+    w2.live = true;
+    s.ring = { kind: w2.kind, t: now };
+    var p = finePos(s.bl, k);
+    env.pulse(p.x, p.y, true);
+    S.tuning(w2.kind, RING_T);
     S.bloom();
   }
 
-  function adjacentCells(bl, a, b) {
-    var ax = a % bl.w, ay = (a / bl.w) | 0, bx = b % bl.w, by = (b / bl.w) | 0;
+  function adjacentFine(bl, a, b) {
+    var w = fineW(bl);
+    var ax = a % w, ay = (a / w) | 0, bx = b % w, by = (b / w) | 0;
     return Math.abs(ax - bx) + Math.abs(ay - by) === 1;
   }
 
   function pressWords(x, y, mh) {
     var s = ses;
-    /* Камертон тратится на ОТПУСКАНИИ, а не на нажатии: якорей мало, и
-       случайный щелчок не должен сжигать ни одного. Пока кнопка зажата, знак
-       в меню просажен, и руку всегда можно увести. */
-    if (mh && mh.e) { s.tap = mh.e; S.key(0); return; }
+    if (s.sweep) { S.nothing(); return; }               // пока идёт помеха, записи ещё нет
+    if (mh && mh.e) { s.drag = { entry: mh.e, x: x, y: y, x0: x, y0: y }; S.grip(true); return; }
     if (mh) return;
-    var k = cellAt(s.bl, x, y), w = k < 0 ? null : wordOf(k);
-    if (!w || w.done) { S.nothing(); return; }
-    s.sel = { cells: [k], kind: w.kind };
+    var k = fineAt(s.bl, x, y);
+    if (k < 0 || s.blocked[k]) { S.nothing(); return; }
+    var wd = s.byCell[k], w = wd === undefined ? null : s.words[wd];
+    if (w && w.done) { S.nothing(); return; }
+    s.sel = { cells: [k], kind: w && w.live ? w.kind : -1, t0: now };
     S.key(0);
   }
 
   /* Взятые знаки подстраиваются под повадку первого. Чужой знак в общий ход не
-     входит, и серия на нём рвётся: правило понимается с первой же попытки, но
-     обойтись без наблюдения всё равно нельзя — каждая догадка стоит жеста. */
+     входит, и серия на нём рвётся. */
   function moveWords(x, y) {
     var s = ses;
+    if (s.drag) { s.drag.x = x; s.drag.y = y; return; }
     if (!s.sel) return;
-    var k = cellAt(s.bl, x, y);
+    var k = fineAt(s.bl, x, y);
     if (k < 0 || s.sel.cells.indexOf(k) >= 0) return;
-    if (!adjacentCells(s.bl, s.sel.cells[s.sel.cells.length - 1], k)) return;
-    var w = wordOf(k);
-    if (!w || w.done || w.kind !== s.sel.kind) {
-      s.bad = { cells: s.sel.cells.concat([k]), t: now };
-      s.sel = null;
-      reject(0.35);
-      return;
-    }
+    if (!adjacentFine(s.bl, s.sel.cells[s.sel.cells.length - 1], k)) return;
+    if (s.blocked[k]) { breakSel(k); return; }
+    var wd = s.byCell[k], w = wd === undefined ? null : s.words[wd];
+    var kind = w && w.live && !w.done ? w.kind : -1;
+    if (kind !== s.sel.kind) { breakSel(k); return; }
     s.sel.cells.push(k);
     S.key(s.sel.cells.length % 4);
   }
-
-  /* Слово закрепляется, только если выделение совпало с ним в точности. */
-  function releaseWords(x, y) {
+  function breakSel(k) {
     var s = ses;
-    if (s.tap) {
-      var e = s.tap, mh = menuHit(x, y);
-      s.tap = null;
-      if (mh && mh.e === e) strike(e); else S.nothing();
-      return;
-    }
+    s.bad = { cells: s.sel.cells.concat(k >= 0 ? [k] : []), t: now };
+    s.sel = null;
+    reject(0.35);
+  }
+
+  /* Слово закрепляется, только если выделение совпало с ним в точности.
+     Запертое слово даёт ошибку даже при верном выделении: без камертона оно
+     не звучит, и корабль его не принимает. */
+  /* d приходит снаружи: общий обработчик отпускания снимает перетаскивание
+     раньше, чем доходит до этапа. */
+  function releaseWords(x, y, d) {
+    var s = ses;
+    if (d && d.entry) { dropTuner(d.entry, fineAt(s.bl, x, y)); return; }
     if (!s.sel) return;
     var sel = s.sel.cells.slice().sort(function (a, b) { return a - b; });
-    var w = wordOf(sel[0]);
     s.sel = null;
-    if (w && !w.done && w.c.length === sel.length && w.c.every(function (k, i) { return k === sel[i]; })) {
+    var wd = s.byCell[sel[0]], w = wd === undefined ? null : s.words[wd];
+    var exact = !!w && !w.done && w.cells.length === sel.length &&
+                w.cells.slice().sort(function (a, b) { return a - b; }).every(function (k, i) { return k === sel[i]; });
+    if (exact && w.live) {
       w.done = true; w.doneAt = now;
-      var p = cellXY(s.bl, w.c[0]);
+      var p = finePos(s.bl, w.cells[0]);
       env.pulse(p.x, p.y, true);
       S.wordLock(w.kind);
       return;
@@ -1075,11 +1299,21 @@
     reject(0.4);
   }
 
+  /* Слова размечены: помеха бежит обратно, и запись возвращается к своему виду
+     уже со словами на местах. */
+  function finishWords() {
+    var s = ses;
+    if (s.sweep) return;
+    s.sweep = { dir: Math.random() < 0.5 ? 1 : -1, t0: now, back: true };
+    S.glitch();
+    btnReset();
+  }
+
   function completeWords() {
-    var s = ses, bl = s.bl, to = env.folderPos(3), n = s.words.length;
-    bl.words = s.words.map(function (w) { return { s: w.s, tis: w.tis, c: w.c, kind: w.kind }; });
+    var s = ses, bl = s.bl, to = env.folderPos(3), n = s.plan.length;
+    bl.words = s.plan.map(function (w) { return { s: w.s, tis: w.tis, c: w.c, kind: w.kind }; });
     s.spentItems.forEach(function (it) { INV().remove(it); });
-    s.words.forEach(function (w, i) {
+    s.plan.forEach(function (w, i) {
       var p = cellXY(bl, w.c[0]);
       fly(p.x, p.y, to.x, to.y - 8, { d: i * 0.1, done: function () { flare[3] = 1; S.tick(i, n); } });
     });
@@ -1088,6 +1322,119 @@
     dirty = true;
     S.sorted(2, 3);
     endSession();
+  }
+
+  // --- отрисовка мелкого поля ---------------------------------------------------
+
+  /* Заливка клетки: выделение проступает НЕ СРАЗУ, а через долю секунды и
+     плавно — иначе оно дёргается вслед за курсором и читается как мусор.
+     Собранное слово остаётся залитым навсегда: игрок всегда видит, что уже
+     сделано. Знак внутри залитой клетки вырезается из заливки и оттого
+     выглядит чёрным. */
+  var SEL_LAG = 0.14, SEL_UP = 0.3, BAD_DOWN = 1.0;
+
+  function fineFill(s, k) {
+    var w = s.byCell[k] !== undefined ? s.words[s.byCell[k]] : null;
+    if (w && w.done) return { a: 1, hot: clamp((now - w.doneAt) / 0.6, 0, 1) };
+    if (s.sel && s.sel.cells.indexOf(k) >= 0) {
+      return { a: clamp((now - s.sel.t0 - SEL_LAG) / SEL_UP, 0, 1), hot: 0 };
+    }
+    if (s.bad && s.bad.cells.indexOf(k) >= 0) {
+      return { a: clamp(1 - (now - s.bad.t) / BAD_DOWN, 0, 1), hot: -1 };
+    }
+    return null;
+  }
+
+  function drawFine(ctx, s) {
+    if (!s.fine) return;
+    var bl = s.bl, w = fineW(bl), n = w * fineH(bl), c = fineSize();
+    var box = F.atlasBox / FINE, back = !!(s.sweep && s.sweep.back);
+    var r = rectOf(bl);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); ctx.clip();
+    for (var k = 0; k < n; k++) {
+      var st = s.fine[k];
+      if (!st || st.hide) continue;
+      var p = finePos(bl, k), px = p.x + st.ox, py = p.y + st.oy;
+      // впереди помехи мелкого письма ещё нет, а на обратном ходу его уже нет
+      if (swept(s, bl, py) === back) continue;
+      var gid = s.over[k] !== undefined ? s.over[k] : s.gids[k];
+      var fill = fineFill(s, k);
+      var bw = box * st.s * s.shrink;
+      ctx.save();
+      if (st.rot) {
+        ctx.translate(px, py); ctx.rotate(st.rot); ctx.translate(-px, -py);
+      }
+      ctx.globalAlpha = 1;
+      F.atlas.draw(ctx, gid, px - bw / 2, py - bw / 2, bw, bw);
+      if (fill && fill.a > 0.01) {
+        // собранное слово остаётся залитым СВЕТЛЫМ, а тёплым его только обводит:
+        // так видно и что сделано, и что делается прямо сейчас
+        var col = fill.hot < 0 ? '255,120,80' : fill.hot > 0 ? '246,240,230' : '236,240,248';
+        ctx.globalAlpha = fill.a * 0.92;
+        ctx.fillStyle = 'rgba(' + col + ',1)';
+        ctx.fillRect(p.x - c / 2, p.y - c / 2, c, c);
+        // знак вырезается из заливки: внутри светлой клетки он читается чёрным
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.globalAlpha = fill.a;
+        F.atlas.draw(ctx, gid, px - bw / 2, py - bw / 2, bw, bw);
+      }
+      ctx.restore();
+    }
+    // собранные слова обведены тёплым: видно всё, что уже сделано
+    ctx.globalCompositeOperation = 'lighter';
+    s.words.forEach(function (wd) {
+      if (!wd.done) return;
+      var a = clamp((now - wd.doneAt) / 0.6, 0, 1);
+      fineEdges(ctx, s, wd.cells, 'rgba(255,190,110,' + (0.45 + 0.45 * a).toFixed(3) + ')', 2);
+    });
+    if (s.bad) {
+      var ba = 1 - clamp((now - s.bad.t) / BAD_DOWN, 0, 1);
+      fineEdges(ctx, s, s.bad.cells, 'rgba(255,80,50,' + ba.toFixed(3) + ')', 2);
+    }
+    ctx.restore();
+    drawSweep(ctx, s);
+  }
+
+  function fineEdges(ctx, s, cells, col, lw) {
+    var bl = s.bl, c = fineSize(), o = org(bl), w = fineW(bl), set = {};
+    cells.forEach(function (k) { set[k] = 1; });
+    ctx.save();
+    glowStroke(ctx, col, 9, lw);
+    ctx.beginPath();
+    cells.forEach(function (k) {
+      var x = k % w, y = (k / w) | 0, X = o.x + x * c, Y = o.y + y * c;
+      if (!set[k - 1] || x === 0) { ctx.moveTo(X, Y); ctx.lineTo(X, Y + c); }
+      if (!set[k + 1] || x === w - 1) { ctx.moveTo(X + c, Y); ctx.lineTo(X + c, Y + c); }
+      if (!set[k - w]) { ctx.moveTo(X, Y); ctx.lineTo(X + c, Y); }
+      if (!set[k + w]) { ctx.moveTo(X, Y + c); ctx.lineTo(X + c, Y + c); }
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /* Сама помеха: яркая полоса со штрихами шума, как вертикальный сбой у
+     старого существа, только поперёк записи. */
+  function drawSweep(ctx, s) {
+    var sw = sweepY(s, s.bl);
+    if (!sw || sw.u >= 1) return;
+    var r = rectOf(s.bl), h = Math.max(3, F.CELL * 0.12);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    var g = ctx.createLinearGradient(0, sw.y - h * 3, 0, sw.y + h * 3);
+    g.addColorStop(0, 'rgba(255,190,120,0)');
+    g.addColorStop(0.5, 'rgba(255,230,190,0.85)');
+    g.addColorStop(1, 'rgba(255,190,120,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(r.x0, sw.y - h * 3, r.x1 - r.x0, h * 6);
+    ctx.fillStyle = 'rgba(255,240,210,0.9)';
+    for (var i = 0; i < 26; i++) {
+      var x = r.x0 + Math.random() * (r.x1 - r.x0), ww = 4 + Math.random() * 40;
+      ctx.globalAlpha = 0.2 + Math.random() * 0.6;
+      ctx.fillRect(x, sw.y + (Math.random() - 0.5) * h * 2.2, ww, Math.max(1, h * 0.25));
+    }
+    ctx.restore();
   }
 
   /* --- 4. Смысл ---------------------------------------------------------------- */
@@ -1288,7 +1635,7 @@
     if (hitBtn(x, y)) {
       if (s.stage === 1) finishTiling();
       else if (s.stage === 2) evaluateRestore();
-      else if (s.stage === 3) completeWords();
+      else if (s.stage === 3) finishWords();
       return;
     }
     var mh = menuHit(x, y);
@@ -1376,7 +1723,7 @@
       return;
     }
 
-    if (s.stage === 3) releaseWords(x, y);
+    if (s.stage === 3) releaseWords(x, y, d);
   }
 
   function wheel(dy, x, y) {
@@ -1387,6 +1734,9 @@
     if (!ses || ses.choose) return false;
     if (ses.stage === 0 || ses.stage === 4) return true;
     var L = menuLayout();
+    /* На разметке слов колесо приближает поле вместе с записью: мелкое письмо
+       иначе не разглядеть, а поиск знака как раз и требует подойти ближе. */
+    if (ses.stage === 3 && !(x >= L.m.x && x <= L.m.x + L.m.w && y >= L.m.y && y <= L.m.y + L.m.h)) return false;
     if (x >= L.m.x && x <= L.m.x + L.m.w && y >= L.m.y && y <= L.m.y + L.m.h) {
       var rowH = ses.stage === 1 ? MENU_ROW1 : 78, rows = Math.ceil(L.items.length / 2);
       var maxS = Math.max(0, rows * rowH + 20 - L.m.h);
@@ -1417,9 +1767,23 @@
     }
     if (s.stage === 2) { show = s.rem.every(function (k) { return !!s.slots[k]; }); rect = rectOf(bl); }
     if (s.stage === 3) {
-      if (s.bad && now - s.bad.t > 0.7) s.bad = null;
+      // скорость курсора нужна уклоняющемуся: он отпрыгивает от быстрого хода
+      if (P) {
+        var vdx = P.x - s.px, vdy = P.y - s.py;
+        s.spd += (Math.hypot(vdx, vdy) / Math.max(1e-3, dt) - s.spd) * Math.min(1, dt * 8);
+        s.px = P.x; s.py = P.y;
+      }
+      if (s.sweep && now - s.sweep.t0 > SWEEP_T) {
+        var back = s.sweep.back;
+        s.sweep = null;
+        if (back) { completeWords(); return; }
+        s.shrinkT = now;                       // знаки садятся в своих клетках
+      }
+      if (s.shrinkT) s.shrink = 1 - (1 - SHRINK_TO) * clamp((now - s.shrinkT) / SHRINK_T, 0, 1);
+      if (s.bad && now - s.bad.t > BAD_DOWN) s.bad = null;
       if (s.ring && now - s.ring.t > RING_T) s.ring = null;
-      show = s.words.every(function (w) { return w.done; });
+      stepFine(s, dt);
+      show = !s.sweep && s.words.length > 0 && s.words.every(function (w) { return w.done; });
       rect = rectOf(bl);
     }
     if (s.stage === 4) {
@@ -1486,25 +1850,15 @@
          Клетки записи по умолчанию стоят неподвижно (still), и повадку надо
          отпустить; волну от курсора глушить нельзя, иначе затаившийся и
          тяжёлый себя не покажут — они только ею и выдают себя. */
+      /* Крупные клетки записи гаснут там, где помеха уже прошла: на их месте
+         лорный модуль рисует своё мелкое поле. */
       if (s.stage === 3) {
-        s.words.forEach(function (w) {
-          var ring = ringNow(w.kind);
-          w.c.forEach(function (k) {
-            var m3 = marks.get(cellKey(bl, k));
-            if (!m3) return;
-            if (w.done) { m3.lit = 1; m3.grow = 0.14; return; }   // закреплённое слово замирает
-            m3.still = 0;
-            m3.beh = w.kind;
-            m3.bamt = ring ? BEH_RING : BEH_IDLE;
-            // под камертоном повадка звучит громче: крупнее и ярче, в своём такте
-            if (ring) { m3.lit = 1; m3.grow = 0.26 + 0.16 * Math.sin(now * 2.4 + w.kind); }
-          });
-        });
-        // взятые знаки подстраиваются под повадку первого и идут вместе
-        if (s.sel) s.sel.cells.forEach(function (k) {
-          var ms = marks.get(cellKey(bl, k));
-          if (ms) { ms.lit = 1; ms.grow = Math.max(ms.grow || 0, 0.3); ms.bamt = BEH_RING; }
-        });
+        for (var w3 = 0; w3 < bl.n; w3++) {
+          var m3 = marks.get(cellKey(bl, w3));
+          if (!m3) continue;
+          var cp = cellXY(bl, w3);
+          if (swept(s, bl, cp.y) !== !!(s.sweep && s.sweep.back)) m3.hide = 1;
+        }
       }
       /* Узел кренится и подаётся в сторону следующего, когда курсор подходит:
          стрелок нет, есть наклон и смещение (как на анализе, раздел 21). */
@@ -1801,37 +2155,7 @@
     return o;
   }
 
-  /* Разделители предложений: над первым предложением одна тонкая белая
-     линия, над вторым две, над третьим три — по строкам, от начала до конца
-     предложения. */
-  function drawDividers(ctx, bl) {
-    var sents = sentences(bl), o = org(bl), c = F.CELL, gap = Math.max(2.5, c * 0.045);
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(240,246,255,0.6)';
-    ctx.lineWidth = 1;
-    sents.forEach(function (cells, si) {
-      var runs = [];
-      cells.forEach(function (k) {
-        var x = k % bl.w, y = (k / bl.w) | 0, last = runs[runs.length - 1];
-        if (last && last.y === y && last.x1 === x) last.x1 = x + 1;
-        else runs.push({ y: y, x0: x, x1: x + 1 });
-      });
-      ctx.beginPath();
-      runs.forEach(function (r) {
-        for (var i = 0; i <= si; i++) {
-          var yy = o.y + r.y * c + c * 0.07 + i * gap;
-          ctx.moveTo(o.x + r.x0 * c + c * 0.06, yy);
-          ctx.lineTo(o.x + r.x1 * c - c * 0.06, yy);
-        }
-      });
-      ctx.stroke();
-    });
-    ctx.restore();
-  }
-
-  /* Текст записи в её рамке. s — идущий четвёртый этап (или null для уже
-     прочитанной записи). */
+  /* Когда проведена связь, приходящая в узел i: по ней узел и проступает. */
   function linkBorn(s, i) {
     if (!s) return -1;
     for (var j = 0; j < s.links.length; j++) if (s.links[j].b === i) return s.links[j].born;
@@ -2060,7 +2384,6 @@
       });
       // круги и разделители предложений остаются под записью навсегда
       bl.dots.forEach(function (k) { var p = cellXY(bl, k); drawPurgedAt(ctx, p.x, p.y, F.CELL * 0.7, 0, false); });
-      if (bl.stage >= 3 && bl.dots.length) drawDividers(ctx, bl);
       // прочитанная запись остаётся графом прямо в своей рамке на карте
       if (bl.stage >= 5 && !(active && ses.stage === 4)) drawRecordGraph(ctx, bl, null);
       if (bl.stage >= 5 && !bl.inJ && bl.pin) drawPin(ctx, bl);
@@ -2146,25 +2469,17 @@
         if (s.drag) drawPurgedAt(ctx, s.drag.x, s.drag.y, 52, s.drag.entry.g, true, 0.9);
       }
       if (s.stage === 3) {
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        // закреплённое слово обведено; незакреплённое не обведено ничем — в
-        // этом и состоит работа
-        s.words.forEach(function (w) {
-          if (!w.done) return;
-          var a = clamp((now - w.doneAt) / 0.5, 0, 1);
-          drawTileEdges(ctx, bl, cellsAbs(bl, w.c), 'rgba(240,246,255,' + (0.35 + 0.55 * a) + ')', 2);
-        });
-        if (s.sel) drawTileEdges(ctx, bl, cellsAbs(bl, s.sel.cells), 'rgba(255,200,130,0.9)', 2);
-        if (s.bad) {
-          var ba = 1 - clamp((now - s.bad.t) / 0.7, 0, 1);
+        drawFine(ctx, s);
+        drawMenu(ctx);
+        // камертон в руке рисуется ПОСЛЕ меню, иначе уезжает под его плашку
+        if (s.drag) {
           ctx.save();
-          ctx.translate(Math.sin(now * 60) * 5 * ba, 0);
-          drawTileEdges(ctx, bl, cellsAbs(bl, s.bad.cells), 'rgba(255,70,40,' + ba.toFixed(3) + ')', 2.2);
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.translate(s.drag.x, s.drag.y);
+          glowStroke(ctx, 'rgba(255,176,90,0.95)', 14, 1.6);
+          G.drawGlyph(ctx, s.drag.entry.g, 44, 1.6);
           ctx.restore();
         }
-        ctx.restore();
-        drawMenu(ctx);
       }
       if (s.stage === 4) drawRecordGraph(ctx, bl, s);
     });
@@ -2524,6 +2839,8 @@
         btn: btn.live ? { x: btn.x, y: btn.y } : null,
         words: s.stage === 3 ? s.words : null,
         chain: s.stage === 4 ? s.chain : null, wordBox: function (w) { return wordBox(bl, w); },
+        fine: s.stage === 3 ? function (k) { return finePos(bl, k); } : null,
+        fineAt: s.stage === 3 ? function (x, y) { return fineAt(bl, x, y); } : null,
         ring: s.stage === 3 ? s.ring : null, removedDone: s.stage === 2 ? removedDone : null
       };
     }

@@ -1273,6 +1273,15 @@
     get ZMIN() { return ZMIN; },
     get ZMAX() { return ZMAX; },
     get atlas() { return atlas; },
+    /* Мелкое поле разметки слов в лорной записи рисует лорный модуль сам, но
+       двигаться знаки в нём обязаны так же, как здесь: иначе слово выдавало бы
+       себя не повадкой, а чужим ритмом. Поэтому связный шум, повадки и мера
+       волны отдаются наружу, а не переписываются там заново. */
+    behave: behave, vnoise: vnoise,
+    get WAVE_R() { return WAVE_R; },
+    get WAVE_A() { return WAVE_A; },
+    get BASE() { return BASE; },
+    get lagV() { return { x: lagVX, y: lagVY }; },
     get atlasBox() { return atlas.box * (CELL / BASE); },
     get voidCount() { return voids.size; },
     // для проверок памяти: сколько записей в каждой карте поля

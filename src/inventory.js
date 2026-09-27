@@ -45,6 +45,17 @@
     do { digits.push(m % 10); m = Math.floor(m / 10); } while (m > 0);
     ctx.save();
     ctx.strokeStyle = color; ctx.fillStyle = color;
+    /* Ноль точками не пишется вовсе, и место счёта оказывалось пустым: в
+       лорной записи линия связи упиралась в пустоту вместо слова. Пустой счёт
+       теперь отмечен полым кружком — место есть, счёта в нём нет. */
+    if (n === 0) {
+      ctx.lineWidth = Math.max(0.8, size * 0.022);
+      ctx.beginPath();
+      ctx.arc(cx, cy, size * 0.12, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
     for (var lvl = digits.length - 1; lvl >= 0; lvl--) {
       var dg = digits[lvl];
       if (!dg) continue;
