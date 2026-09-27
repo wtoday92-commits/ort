@@ -991,15 +991,54 @@
   function fineH(bl) { return bl.h * FINE; }
   function fineSize() { return F.CELL / FINE; }
 
-  function finePos(bl, k) {
-    var o = org(bl), c = fineSize(), w = fineW(bl);
-    return { x: o.x + (k % w + 0.5) * c, y: o.y + (((k / w) | 0) + 0.5) * c };
+  /* У поля разметки СВОЯ крупность, отдельная от карты: запись остаётся того
+     же размера и на том же месте, а письмо в ней растёт. Всё поле тогда в
+     рамку не влезает, и его водят курсором у кромки — тем же жестом, каким
+     водят саму карту. */
+  var FZMIN = 1, FZMAX = 4.2, FZ0 = 1.6;
+
+  function fineU(s) { return fineSize() * s.fz; }
+  function fineOrg(s) {
+    var r = rectOf(s.bl);
+    return { x: r.x0 + s.fx, y: r.y0 + s.fy, u: fineU(s) };
   }
-  function fineAt(bl, x, y) {
-    var o = org(bl), c = fineSize(), w = fineW(bl);
-    var fx = Math.floor((x - o.x) / c), fy = Math.floor((y - o.y) / c);
+  function clampPan(s) {
+    var r = rectOf(s.bl), u = fineU(s);
+    var cw = fineW(s.bl) * u, ch = fineH(s.bl) * u;
+    var rw = r.x1 - r.x0, rh = r.y1 - r.y0;
+    s.fx = cw <= rw ? (rw - cw) / 2 : clamp(s.fx, rw - cw, 0);
+    s.fy = ch <= rh ? (rh - ch) / 2 : clamp(s.fy, rh - ch, 0);
+  }
+  function finePos(s, k) {
+    var o = fineOrg(s), w = fineW(s.bl);
+    return { x: o.x + (k % w + 0.5) * o.u, y: o.y + (((k / w) | 0) + 0.5) * o.u };
+  }
+  function fineAt(s, x, y) {
+    var bl = s.bl, r = rectOf(bl), o = fineOrg(s), w = fineW(bl);
+    if (x < r.x0 || x > r.x1 || y < r.y0 || y > r.y1) return -1;
+    var fx = Math.floor((x - o.x) / o.u), fy = Math.floor((y - o.y) / o.u);
     if (fx < 0 || fy < 0 || fx >= w || fy >= fineH(bl)) return -1;
     return fy * w + fx;
+  }
+  // клетка записи в том же виде: под ней лежит FINE x FINE мелких
+  function coarseBox(s, k) {
+    var o = fineOrg(s), c = o.u * FINE, bl = s.bl;
+    return { x: o.x + (k % bl.w) * c, y: o.y + (((k / bl.w) | 0)) * c, c: c,
+             cx: o.x + (k % bl.w + 0.5) * c, cy: o.y + (((k / bl.w) | 0) + 0.5) * c };
+  }
+
+  /* Точка под курсором остаётся на месте, иначе поле выпрыгивает из-под руки
+     (то же правило, что и у зума карты, раздел 17). */
+  function fineZoom(s, dy, x, y) {
+    var o = fineOrg(s), gx = (x - o.x) / o.u, gy = (y - o.y) / o.u;
+    var z = clamp(s.fz * (dy > 0 ? 0.82 : 1.22), FZMIN, FZMAX);
+    if (Math.abs(z - s.fz) < 1e-4) return;
+    s.fz = z;
+    var r = rectOf(s.bl), u = fineU(s);
+    s.fx = x - r.x0 - gx * u;
+    s.fy = y - r.y0 - gy * u;
+    clampPan(s);
+    S.zoom(dy > 0 ? -1 : 1);
   }
   // в какой клетке записи лежит мелкая клетка
   function coarseOf(bl, k) {
@@ -1026,7 +1065,7 @@
      одном углу, и поиск терял бы смысл: найдя два слова до точки, игрок вправе
      решить, что дальше там пусто, и уйти искать за неё. */
   function planFine(bl, plan, rnd2) {
-    var w = fineW(bl), out = [], bySent = {}, sents = sentences(bl);
+    var w = fineW(bl), out = [], bySent = {}, sents = sentences(bl), used = {};
     plan.forEach(function (p, i) { (bySent[p.s] = bySent[p.s] || []).push(i); });
     Object.keys(bySent).forEach(function (sk) {
       var si = +sk, list = bySent[sk], own = {};
@@ -1048,8 +1087,14 @@
       list.forEach(function (wi, j) {
         var len = clamp(plan[wi].c.length + 1, 2, 4);
         var lo = Math.floor(j * slice), hi = Math.floor((j + 1) * slice);
-        var run = pickRun(all, lo, hi, len, w, rnd2) || pickRun(all, 0, all.length, len, w, rnd2);
+        var run = pickRun(all, lo, hi, len, w, rnd2, used) || pickRun(all, 0, all.length, len, w, rnd2, used);
         out[wi] = run || all.slice(0, Math.min(len, all.length));
+        /* Между словами обязателен зазор. Впритык они сливаются в одну серию:
+           курсор переходит с конца одного на начало другого, выделение
+           выходит длиннее слова, и верный на вид ход даёт отказ. */
+        out[wi].forEach(function (k) {
+          [0, -1, 1, -w, w, -w - 1, -w + 1, w - 1, w + 1].forEach(function (d) { used[k + d] = 1; });
+        });
       });
     });
     plan.forEach(function (p, i) { if (!out[i]) out[i] = [0, 1]; });
@@ -1058,12 +1103,13 @@
 
   /* Горизонтальный отрезок нужной длины внутри доли: по слову должно быть
      удобно провести курсором одним движением. */
-  function pickRun(all, lo, hi, len, w, rnd2) {
+  function pickRun(all, lo, hi, len, w, rnd2, used) {
     var cands = [], p, q, ok;
     for (p = lo; p + len <= hi; p++) {
       ok = true;
-      for (q = 1; q < len && ok; q++) {
-        if (all[p + q] !== all[p + q - 1] + 1 || ((all[p + q] / w) | 0) !== ((all[p] / w) | 0)) ok = false;
+      for (q = 0; q < len && ok; q++) {
+        if (used && used[all[p + q]]) ok = false;
+        else if (q && (all[p + q] !== all[p + q - 1] + 1 || ((all[p + q] / w) | 0) !== ((all[p] / w) | 0))) ok = false;
       }
       if (ok) cands.push(p);
     }
@@ -1106,7 +1152,7 @@
       if (out.kick) ox += Math.sin(ph * 5.1) * out.kick * zs * 2.4;
       if (out.lag) { ox -= lag.x * out.lag * zs; oy -= lag.y * out.lag * zs; }
       var rot = Math.sin(bt * rt * 2 * Math.PI * 0.11 + ph) * 0.125 * out.rot;
-      var px = finePos(bl, k), sx = px.x + ox, sy = px.y + oy;
+      var px = finePos(s, k), sx = px.x + ox, sy = px.y + oy;
       var dx = sx - cx, dy = sy - cy, d = Math.sqrt(dx * dx + dy * dy) || 1e-4;
       if (out.evade && d < wr) {
         var push = Math.pow(1 - d / wr, 1.5) * 32 * zs * out.evade * Math.min(1, s.spd / 380);
@@ -1194,7 +1240,9 @@
             menu: menu, spent: spent, spentItems: [],
             sel: null, bad: null, ring: null, tap: null, drag: null,
             sweep: { dir: Math.random() < 0.5 ? 1 : -1, t0: now, back: false },
-            shrink: 1, spd: 0, px: 0, py: 0, fine: null, scroll: 0 };
+            shrink: 1, spd: 0, px: 0, py: 0, fine: null, scroll: 0,
+            fz: FZ0, fx: 0, fy: 0 };
+    clampPan(ses);
     S.glitch();
     btnReset();
   }
@@ -1226,7 +1274,7 @@
     var w2 = s.words[hit];
     w2.live = true;
     s.ring = { kind: w2.kind, t: now };
-    var p = finePos(s.bl, k);
+    var p = finePos(s, k);
     env.pulse(p.x, p.y, true);
     S.tuning(w2.kind, RING_T);
     S.bloom();
@@ -1243,7 +1291,7 @@
     if (s.sweep) { S.nothing(); return; }               // пока идёт помеха, записи ещё нет
     if (mh && mh.e) { s.drag = { entry: mh.e, x: x, y: y, x0: x, y0: y }; S.grip(true); return; }
     if (mh) return;
-    var k = fineAt(s.bl, x, y);
+    var k = fineAt(s, x, y);
     if (k < 0 || s.blocked[k]) { S.nothing(); return; }
     var wd = s.byCell[k], w = wd === undefined ? null : s.words[wd];
     if (w && w.done) { S.nothing(); return; }
@@ -1257,7 +1305,7 @@
     var s = ses;
     if (s.drag) { s.drag.x = x; s.drag.y = y; return; }
     if (!s.sel) return;
-    var k = fineAt(s.bl, x, y);
+    var k = fineAt(s, x, y);
     if (k < 0 || s.sel.cells.indexOf(k) >= 0) return;
     if (!adjacentFine(s.bl, s.sel.cells[s.sel.cells.length - 1], k)) return;
     if (s.blocked[k]) { breakSel(k); return; }
@@ -1281,7 +1329,7 @@
      раньше, чем доходит до этапа. */
   function releaseWords(x, y, d) {
     var s = ses;
-    if (d && d.entry) { dropTuner(d.entry, fineAt(s.bl, x, y)); return; }
+    if (d && d.entry) { dropTuner(d.entry, fineAt(s, x, y)); return; }
     if (!s.sel) return;
     var sel = s.sel.cells.slice().sort(function (a, b) { return a - b; });
     s.sel = null;
@@ -1290,7 +1338,7 @@
                 w.cells.slice().sort(function (a, b) { return a - b; }).every(function (k, i) { return k === sel[i]; });
     if (exact && w.live) {
       w.done = true; w.doneAt = now;
-      var p = finePos(s.bl, w.cells[0]);
+      var p = finePos(s, w.cells[0]);
       env.pulse(p.x, p.y, true);
       S.wordLock(w.kind);
       return;
@@ -1347,15 +1395,16 @@
 
   function drawFine(ctx, s) {
     if (!s.fine) return;
-    var bl = s.bl, w = fineW(bl), n = w * fineH(bl), c = fineSize();
-    var box = F.atlasBox / FINE, back = !!(s.sweep && s.sweep.back);
+    var bl = s.bl, w = fineW(bl), n = w * fineH(bl), c = fineU(s);
+    // и знак, и заливка живут в крупности САМОГО поля записи, а не карты
+    var box = F.atlasBox * c / F.CELL, back = !!(s.sweep && s.sweep.back);
     var r = rectOf(bl);
     ctx.save();
     ctx.beginPath(); ctx.rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); ctx.clip();
     for (var k = 0; k < n; k++) {
       var st = s.fine[k];
       if (!st || st.hide) continue;
-      var p = finePos(bl, k), px = p.x + st.ox, py = p.y + st.oy;
+      var p = finePos(s, k), px = p.x + st.ox, py = p.y + st.oy;
       // впереди помехи мелкого письма ещё нет, а на обратном ходу его уже нет
       if (swept(s, bl, py) === back) continue;
       var gid = s.over[k] !== undefined ? s.over[k] : s.gids[k];
@@ -1397,7 +1446,7 @@
   }
 
   function fineEdges(ctx, s, cells, col, lw) {
-    var bl = s.bl, c = fineSize(), o = org(bl), w = fineW(bl), set = {};
+    var bl = s.bl, o = fineOrg(s), c = o.u, w = fineW(bl), set = {};
     cells.forEach(function (k) { set[k] = 1; });
     ctx.save();
     glowStroke(ctx, col, 9, lw);
@@ -1734,9 +1783,14 @@
     if (!ses || ses.choose) return false;
     if (ses.stage === 0 || ses.stage === 4) return true;
     var L = menuLayout();
-    /* На разметке слов колесо приближает поле вместе с записью: мелкое письмо
-       иначе не разглядеть, а поиск знака как раз и требует подойти ближе. */
-    if (ses.stage === 3 && !(x >= L.m.x && x <= L.m.x + L.m.w && y >= L.m.y && y <= L.m.y + L.m.h)) return false;
+    var overMenu = x >= L.m.x && x <= L.m.x + L.m.w && y >= L.m.y && y <= L.m.y + L.m.h;
+    /* Колесо ВНУТРИ записи меняет крупность только её поля; снаружи — как
+       везде, весь мир вместе с записью. */
+    if (ses.stage === 3 && !overMenu) {
+      var r = rectOf(ses.bl);
+      if (x > r.x0 && x < r.x1 && y > r.y0 && y < r.y1) { fineZoom(ses, dy, x, y); return true; }
+      return false;
+    }
     if (x >= L.m.x && x <= L.m.x + L.m.w && y >= L.m.y && y <= L.m.y + L.m.h) {
       var rowH = ses.stage === 1 ? MENU_ROW1 : 78, rows = Math.ceil(L.items.length / 2);
       var maxS = Math.max(0, rows * rowH + 20 - L.m.h);
@@ -1780,6 +1834,26 @@
         s.shrinkT = now;                       // знаки садятся в своих клетках
       }
       if (s.shrinkT) s.shrink = 1 - (1 - SHRINK_TO) * clamp((now - s.shrinkT) / SHRINK_T, 0, 1);
+      /* Курсор у кромки записи уводит её поле в эту сторону, с разгоном — тем
+         же жестом, каким игрок водит саму карту (раздел 12). На выделении
+         прокрутка выключена: иначе слово уезжает из-под руки. */
+      if (P && !s.sweep && !s.sel) {
+        var r3 = rectOf(bl), vx = 0, vy = 0;
+        var mx = clamp((r3.x1 - r3.x0) * 0.1, 26, 80), my = clamp((r3.y1 - r3.y0) * 0.12, 20, 60);
+        if (P.x > r3.x0 && P.x < r3.x1 && P.y > r3.y0 && P.y < r3.y1) {
+          if (P.x - r3.x0 < mx) vx = (mx - (P.x - r3.x0)) / mx;
+          else if (r3.x1 - P.x < mx) vx = -(mx - (r3.x1 - P.x)) / mx;
+          if (P.y - r3.y0 < my) vy = (my - (P.y - r3.y0)) / my;
+          else if (r3.y1 - P.y < my) vy = -(my - (r3.y1 - P.y)) / my;
+        }
+        if (vx || vy) {
+          // чем крупнее письмо, тем длиннее поле: ход должен оставаться тем же
+          var SPD = 380 * s.fz;
+          s.fx += vx * Math.abs(vx) * SPD * dt;
+          s.fy += vy * Math.abs(vy) * SPD * dt;
+          clampPan(s);
+        }
+      }
       if (s.bad && now - s.bad.t > BAD_DOWN) s.bad = null;
       if (s.ring && now - s.ring.t > RING_T) s.ring = null;
       stepFine(s, dt);
@@ -1988,11 +2062,12 @@
   function drawTileEdges(ctx, bl, cellsAbs, col, lw) {
     drawManyEdges(ctx, bl, [cellsAbs], col, lw);
   }
-  function drawManyEdges(ctx, bl, groups, col, lw) {
+  function drawManyEdges(ctx, bl, groups, col, lw, o, cell) {
     if (!groups.length) return;
-    var o = org(bl);
+    o = o || org(bl);
+    cell = cell || F.CELL;
     ctx.beginPath();
-    groups.forEach(function (cs) { edgesPath(ctx, cs, o.x, o.y, F.CELL, true); });
+    groups.forEach(function (cs) { edgesPath(ctx, cs, o.x, o.y, cell, true); });
     glowStroke(ctx, col, 8, lw);
     ctx.stroke();
   }
@@ -2369,21 +2444,33 @@
          в тень, чтобы не спорить со словами. */
       var wordsOn = active && ses.stage === 3;
       var tileA = bl.stage >= 4 ? 0.3 : wordsOn ? 0.16 : 0.55;
-      drawManyEdges(ctx, bl, bl.tiles.map(function (tl) { return tl.c; }), 'rgba(236,244,255,' + tileA + ')', 1.2);
+      /* На разметке слов запись живёт в своей крупности: круги, следы
+         восстановления и границы фигур едут и растут вместе с её полем, иначе
+         предложения разъехались бы со словами, которые в них лежат. */
+      var fv = wordsOn ? fineOrg(ses) : null;
+      if (fv) { var tr = rectOf(bl); ctx.beginPath(); ctx.rect(tr.x0, tr.y0, tr.x1 - tr.x0, tr.y1 - tr.y0); ctx.clip(); }
+      drawManyEdges(ctx, bl, bl.tiles.map(function (tl) { return tl.c; }), 'rgba(236,244,255,' + tileA + ')', 1.2,
+                    fv, fv ? fv.u * FINE : 0);
       // рамки слов: на них встанут узлы графа
       if (bl.stage >= 4) drawManyEdges(ctx, bl, wordsOf(bl).map(function (w) { return cellsAbs(bl, w.c); }), 'rgba(236,244,255,0.5)', 1.2);
       // начатая укладка видна и вне этапа
       if (bl.stage === 1 && bl.draft && !(active && ses.stage === 1)) drawManyEdges(ctx, bl, bl.draft.map(function (d) { return d.c; }), 'rgba(255,190,110,0.6)', 1.6);
       drawTiled(ctx, bl, active);
       ctx.restore();
+      var fv2 = active && ses.stage === 3 ? ses : null;
+      if (fv2) { ctx.save(); var fr = rectOf(bl); ctx.beginPath(); ctx.rect(fr.x0, fr.y0, fr.x1 - fr.x0, fr.y1 - fr.y0); ctx.clip(); }
       Object.keys(bl.restored).forEach(function (kk) {
         var k = +kk;
         if (bl.dots.indexOf(k) >= 0) return;
-        var p = cellXY(bl, k);
-        drawPurgedAt(ctx, p.x, p.y, F.CELL, bl.cells[k], true);
+        var p = fv2 ? coarseBox(fv2, k) : cellXY(bl, k);
+        drawPurgedAt(ctx, fv2 ? p.cx : p.x, fv2 ? p.cy : p.y, fv2 ? p.c : F.CELL, bl.cells[k], true);
       });
       // круги и разделители предложений остаются под записью навсегда
-      bl.dots.forEach(function (k) { var p = cellXY(bl, k); drawPurgedAt(ctx, p.x, p.y, F.CELL * 0.7, 0, false); });
+      bl.dots.forEach(function (k) {
+        var p = fv2 ? coarseBox(fv2, k) : cellXY(bl, k);
+        drawPurgedAt(ctx, fv2 ? p.cx : p.x, fv2 ? p.cy : p.y, (fv2 ? p.c : F.CELL) * 0.7, 0, false);
+      });
+      if (fv2) ctx.restore();
       // прочитанная запись остаётся графом прямо в своей рамке на карте
       if (bl.stage >= 5 && !(active && ses.stage === 4)) drawRecordGraph(ctx, bl, null);
       if (bl.stage >= 5 && !bl.inJ && bl.pin) drawPin(ctx, bl);
@@ -2839,8 +2926,9 @@
         btn: btn.live ? { x: btn.x, y: btn.y } : null,
         words: s.stage === 3 ? s.words : null,
         chain: s.stage === 4 ? s.chain : null, wordBox: function (w) { return wordBox(bl, w); },
-        fine: s.stage === 3 ? function (k) { return finePos(bl, k); } : null,
-        fineAt: s.stage === 3 ? function (x, y) { return fineAt(bl, x, y); } : null,
+        fine: s.stage === 3 ? function (k) { return finePos(s, k); } : null,
+        fineAt: s.stage === 3 ? function (x, y) { return fineAt(s, x, y); } : null,
+        fineView: s.stage === 3 ? function () { return { fz: s.fz, fx: s.fx, fy: s.fy, u: fineU(s) }; } : null,
         ring: s.stage === 3 ? s.ring : null, removedDone: s.stage === 2 ? removedDone : null
       };
     }
