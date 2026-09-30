@@ -276,7 +276,13 @@
   var freeze = 0;
   var t = 0;
 
-  var states = new Map();
+  /* Подъём знака на волне — по одному числу на клетку карты. Раньше это была
+     Map с объектом на клетку и чисткой, как только записей больше 9000; на
+     отдалении большого экрана видимых клеток больше 9000, и чистка шла каждый
+     кадр, перебирая всё и не удаляя ничего. Карта конечна (192 на 192), так
+     что массив на всю карту дешевле любой чистки. */
+  function mkStates(w, h) { var a = new Float32Array(w * h); a.fill(1); return a; }
+  var states = null;
   var atlas = null;
   var sel = null, dimOthers = 0, liftSel = 0;
   var hot = 0;                     // доля ярко поднятых знаков: её слышно в звуке
@@ -318,6 +324,7 @@
     // атлас печётся с запасом по детали, чтобы держать зум до двукратного
     atlas = G.buildAtlas(BASE, 'rgb(255,158,58)', BASE * 0.10, 0.64, 2);
     camCX = W * 0.5; camCY = H * 0.5;
+    states = mkStates(W, H);
   }
 
   /* Всё состояние поля одним объектом. Карты и множества передаются ссылками,
@@ -343,7 +350,8 @@
     camCX = o.camCX; camCY = o.camCY; zoom = o.zoom; zoomWant = o.zoomWant; CELL = BASE * zoom;
     driftAng = o.driftAng; driftVX = o.driftVX; driftVY = o.driftVY;
     panVX = o.panVX; panVY = o.panVY; lagVX = o.lagVX; lagVY = o.lagVY;
-    t = o.t; states = o.states; over = o.over; spent = o.spent; glitch = o.glitch;
+    t = o.t; over = o.over; spent = o.spent; glitch = o.glitch;
+    states = o.states instanceof Float32Array && o.states.length === W * H ? o.states : mkStates(W, H);
     purged = o.purged; shards = o.shards; outlines = o.outlines; voids = o.voids;
     nodes = o.nodes; cells = o.cells; consumed = o.consumed;
     behWant = o.behWant; behAmt = o.behAmt;
@@ -362,7 +370,7 @@
       W: opt.w, H: opt.h, SEED: opt.seed, PAIR_P: opt.pairP === undefined ? 0.78 : opt.pairP,
       camCX: opt.w * 0.5, camCY: opt.h * 0.5, zoom: z, zoomWant: z,
       driftAng: Math.random() * 6.28, driftVX: 0, driftVY: 0, panVX: 0, panVY: 0, lagVX: 0, lagVY: 0,
-      t: 0, states: new Map(), over: new Map(), spent: new Set(), glitch: new Set(),
+      t: 0, states: mkStates(opt.w, opt.h), over: new Map(), spent: new Set(), glitch: new Set(),
       purged: new Map(), shards: new Set(), outlines: [], voids: new Map(),
       nodes: new Map(), cells: new Map(), consumed: new Set(), behWant: 1, behAmt: 1,
       shardId: new Map(), sortedCells: 0, beacon: -1, spin: new Map(), sortedOf: new Map(),
@@ -731,6 +739,36 @@
   }
 
   var out = {};
+  var skipCr = null, skipKW = 1;      // готовые куски дальнего масштаба: их клетки не считаются
+
+  /* Что у клетки не меняется никогда: фаза и период качания, сдвиг внутри
+     клетки, яркость, знак по сиду. Раньше всё это считалось заново каждый кадр
+     для каждой видимой клетки — полтора десятка хешей и два шумовых поля на
+     клетку, а на отдалении видимых клеток тысячи. Теперь — один раз на клетку
+     карты, при первом появлении на экране. Своя таблица у каждого мира. */
+  var statCache = {}, stat = null;
+  function statics() {
+    var key = SEED + ':' + W + ':' + H;
+    if (stat && stat.key === key) return stat;
+    stat = statCache[key];
+    if (!stat) {
+      var keys = Object.keys(statCache);
+      if (keys.length > 3) delete statCache[keys[0]];
+      var n = W * H;
+      stat = statCache[key] = { key: key, ok: new Uint8Array(n), ph: new Float32Array(n), rt: new Float32Array(n),
+        jx: new Float32Array(n), jy: new Float32Array(n), dim: new Float32Array(n), gid: new Uint16Array(n) };
+    }
+    return stat;
+  }
+  function fillStat(sc, idx, wx, wy) {
+    sc.ph[idx] = (vnoise(wx / 7, wy / 7, SEED + 6) * 0.86 + G.rand3(wx, wy, SEED + 1) * 0.14) * Math.PI * 2;
+    sc.rt[idx] = 0.24 + vnoise(wx / 9, wy / 9, SEED + 8) * 0.22 + G.rand3(wx, wy, SEED + 2) * 0.05;
+    sc.jx[idx] = (G.rand3(wx, wy, SEED + 4) - 0.5) * 0.26;
+    sc.jy[idx] = (G.rand3(wx, wy, SEED + 5) - 0.5) * 0.22;
+    sc.dim[idx] = 0.62 + G.rand3(wx, wy, SEED + 3) * 0.38;
+    sc.gid[idx] = G.hash3(wx, wy, SEED) % G.COUNT;
+    sc.ok[idx] = 1;
+  }
 
   function each(vw, vh, cursor, fn) {
     var x0c = Math.floor(camCX) - 1, y0c = Math.floor(camCY) - 1;
@@ -741,12 +779,24 @@
     var live = 1 - freeze;
     var breathDamp = 1 - 0.66 * freeze;
     var zs = CELL / BASE;
+    // на дальнем масштабе знаки стоят: иначе куски карты не совпали бы с живыми
+    var swayK = Math.max(0, Math.min(1, (CELL - LOD_CELL) / LOD_BAND));
+    var sc = statics();
+    if (!states || states.length !== W * H) states = mkStates(W, H);
 
     for (var j = 0; j < ny; j++) {
       for (var i = 0; i < nx; i++) {
         var gx = x0c + i, gy = y0c + j;
         var wx = wrap(gx, W), wy = wrap(gy, H);
         var key = ckey(wx, wy);
+        var idx = wy * W + wx;
+        /* Клетка готового куска рисуется его картинкой: ни волны, ни накладки,
+           ни особого знака здесь нет по построению куска — считать нечего. */
+        if (skipCr && skipCr[((wy / CH) | 0) * skipKW + ((wx / CH) | 0)] && chunkPlain(key)) {
+          states[idx] = 1;
+          continue;
+        }
+        if (!sc.ok[idx]) fillStat(sc, idx, wx, wy);
 
         var mk = marks ? marks.get(key) : null;
         var vd = voids.get(key), vs = null;
@@ -759,11 +809,11 @@
 
         // клетки уникального объекта стоят ровно по сетке: форма читается целиком
         var isObj = objCell.has(key);
-        var sx = (gx - camCX) * CELL + CELL / 2 + (isObj ? 0 : jitterX(wx, wy));
-        var sy = (gy - camCY) * CELL + CELL / 2 + (isObj ? 0 : jitterY(wx, wy));
+        var sx = (gx - camCX) * CELL + CELL / 2 + (isObj ? 0 : sc.jx[idx] * CELL);
+        var sy = (gy - camCY) * CELL + CELL / 2 + (isObj ? 0 : sc.jy[idx] * CELL);
 
         var anc = vd ? null : anchorAt(wx, wy);
-        var id = anc ? anc.gid : (G.hash3(wx, wy, SEED) % G.COUNT);
+        var id = anc ? anc.gid : sc.gid[idx];
         if (over && over.has(key)) id = over.get(key);
         // якорь уникального объекта раз в несколько секунд сбоит: на миг это другой знак
         var objGl = 0;
@@ -780,10 +830,7 @@
            только фаза, а период оставался случайным на клетку: соседи
            расходились за несколько секунд, и обычный знак начинал биться
            против всех, изображая повадку. Это и были ложные якоря. */
-        var ph = (vnoise(wx / 7, wy / 7, SEED + 6) * 0.86
-                + G.rand3(wx, wy, SEED + 1) * 0.14) * Math.PI * 2;
-        var rt = 0.24 + vnoise(wx / 9, wy / 9, SEED + 8) * 0.22
-               + G.rand3(wx, wy, SEED + 2) * 0.05;
+        var ph = sc.ph[idx], rt = sc.rt[idx];
 
         var px0 = 0, py0 = 0;
         out.breath = 1; out.lag = 0; out.waveMul = 1;
@@ -796,7 +843,7 @@
         else if (mk && mk.beh >= 0 && mk.bamt > 0.002) behave(mk.beh, out, Math.min(1, mk.bamt));
 
         var bt = out.breathFreeze ? Math.floor(t * 1.6) / 1.6 : t;
-        var amp = 3.6 * zs * out.breath * breathDamp;
+        var amp = 3.6 * zs * out.breath * breathDamp * swayK;
         var ox = Math.sin(bt * rt * 2 * Math.PI * 0.16 + ph) * amp;
         var oy = Math.cos(bt * rt * 2 * Math.PI * 0.13 + ph * 1.7) * amp;
         if (out.kick) { ox += Math.sin(ph * 5.1) * out.kick * zs * 2.4; }
@@ -806,7 +853,7 @@
            полтора пикселя, поэтому именно на нём держится вся заметность
            повадок: у затаившегося он ровно нулевой. */
         var rot = Math.sin(bt * rt * 2 * Math.PI * 0.11 + ph) * 0.125
-                * out.rot * breathDamp;
+                * out.rot * breathDamp * swayK;
 
         if (isObj) { ox = 0; oy = 0; rot = 0; }
         if (mk) {
@@ -865,16 +912,15 @@
         // накладка этапа просит тишины: волна курсора знак не раздувает
         if (mk && mk.calm) f = 0;
 
-        var st = states.get(key);
-        if (!st) { st = { s: 1, seen: 0 }; states.set(key, st); }
+        var sv = states[idx];
         var tgt = 1 + f * WAVE_A * out.waveMul;
         // подъём и спад считаются раздельно: у тяжёлого знака спад медленный,
         // и это его главная примета
-        var kk = tgt > st.s ? (out.rise || 9.5) : (out.fall || 9.5);
-        st.s += (tgt - st.s) * Math.min(1, dt_ * kk);
-        st.seen = t;
+        var kk = tgt > sv ? (out.rise || 9.5) : (out.fall || 9.5);
+        sv += (tgt - sv) * Math.min(1, dt_ * kk);
+        states[idx] = sv;
 
-        var dim = 0.62 + G.rand3(wx, wy, SEED + 3) * 0.38;
+        var dim = sc.dim[idx];
         var bo = boost ? (boost.get(key) || 0) : 0;
         if (isObj) bo += 0.14;
 
@@ -886,12 +932,9 @@
           py += Math.cos(t * 37 + key * 1.7) * 1.8 * zs;
         }
 
-        fn(gx, gy, wx, wy, key, id, px, py, st.s, f, dim, inSel, bo, anc, vs, rot, mk, spent.has(key) ? 1 : 0, gl,
+        fn(gx, gy, wx, wy, key, id, px, py, sv, f, dim, inSel, bo, anc, vs, rot, mk, spent.has(key) ? 1 : 0, gl,
            purged.has(key) ? purged.get(key) : -1, shards.has(key) ? 1 : 0);
       }
-    }
-    if (states.size > 9000) {
-      states.forEach(function (v, k2) { if (t - v.seen > 3) states.delete(k2); });
     }
   }
 
@@ -1038,12 +1081,147 @@
     ctx.restore();
   }
 
+  /* --- дальний масштаб: куски карты ------------------------------------------
+     Вывести знак стоит примерно полторы-две микросекунды, и цена почти не
+     зависит от его размера. На сильном отдалении видимых знаков тысячи (на
+     большом мониторе — больше десяти тысяч), и кадр тонул в одних только
+     выводах. Поэтому там обычные знаки кусками 8 на 8 клеток один раз
+     рисуются в готовую картинку, и за кадр выводится картинка, а не 64 знака.
+     Поштучно, как раньше, рисуется всё живое: волна вокруг курсора,
+     выделение, накладки этапов, подсветки, якоря, пустоты, утилизированное,
+     осколки, глюки, объекты. Качание знаков к этому масштабу плавно гаснет,
+     так что переход не виден. Содержимое кусков понемногу сверяется с картой,
+     и изменившийся кусок перерисовывается. */
+  /* Картинка куска рисуется в клетках по 24 точки (на этом масштабе клетка
+     экрана от 19 до 33 точек), с полем в треть клетки на вылезающие края
+     знаков: так кусок весит около 170 КБ, и видимые куски большого экрана
+     укладываются в несколько десятков мегабайт. */
+  var LOD_CELL = 33, LOD_BAND = 8, CH = 8, CR = 24, CPAD = 0.34;
+  var noLod = /[?&]nolod\b/.test(typeof location !== 'undefined' ? location.search : '');
+  var chunks = new Map(), chunkKey = '', chunkReady = null, chunkRR = 0, lodStats = null;
+
+  // обычная клетка: её можно держать в куске
+  function chunkPlain(key) {
+    return !voids.has(key) && !purged.has(key) && !shards.has(key) && !glitch.has(key) &&
+           !spin.has(key) && !objCell.has(key) && !objAnch.has(key) && !cells.has(key);
+  }
+  function chunkSig(kx, ky, sc) {
+    var h = 17;
+    for (var y = 0; y < CH; y++) for (var x = 0; x < CH; x++) {
+      var wx = kx * CH + x, wy = ky * CH + y, key = ckey(wx, wy), idx = wy * W + wx;
+      if (!sc.ok[idx]) fillStat(sc, idx, wx, wy);
+      var v = chunkPlain(key) ? (over.has(key) ? over.get(key) : sc.gid[idx]) + (spent.has(key) ? 4096 : 0) : 8191;
+      h = (Math.imul(h, 31) + v) | 0;
+    }
+    return h;
+  }
+  function buildChunk(kx, ky, sc) {
+    ensure(kx * CH - 1, ky * CH - 1, kx * CH + CH + 1, ky * CH + CH + 1);
+    var n = CH + CPAD * 2, cv = document.createElement('canvas');
+    cv.width = cv.height = Math.ceil(n * CR);
+    var c = cv.getContext('2d');
+    c.globalCompositeOperation = 'lighter';
+    var box = atlas.box * (CR / BASE);
+    for (var y = 0; y < CH; y++) for (var x = 0; x < CH; x++) {
+      var wx = kx * CH + x, wy = ky * CH + y, key = ckey(wx, wy), idx = wy * W + wx;
+      if (!sc.ok[idx]) fillStat(sc, idx, wx, wy);
+      if (!chunkPlain(key)) continue;
+      var id = over.has(key) ? over.get(key) : sc.gid[idx];
+      var a = 0.34 * sc.dim[idx], b = box;
+      if (spent.has(key)) { b *= 0.5; a *= 0.42; }
+      var px = (x + CPAD + 0.5 + sc.jx[idx]) * CR, py = (y + CPAD + 0.5 + sc.jy[idx]) * CR;
+      c.globalAlpha = Math.min(1, a);
+      atlas.draw(c, id, px - b / 2, py - b / 2, b, b);
+    }
+    return { cv: cv, sig: chunkSig(kx, ky, sc) };
+  }
+
+  /* Какие куски в этот кадр выводятся картинкой. Живые места — окрестность
+     курсора, рамка выделения, накладки и подсветки — рисуются поштучно. */
+  function prepChunks(vw, vh, cursor) {
+    chunkReady = null;
+    if (noLod || CELL >= LOD_CELL || W % CH || H % CH || beacon >= 0 || streak > 0.01) return;
+    var sc = statics(), key = SEED + ':' + W + ':' + H;
+    if (key !== chunkKey) { chunks.clear(); chunkKey = key; }
+    var KW = W / CH, KH = H / CH, dyn = new Uint8Array(KW * KH);
+    function mark(wx, wy) { dyn[(((wy / CH) | 0) % KH) * KW + (((wx / CH) | 0) % KW)] = 1; }
+    function markRect(x0, y0, x1, y1) {
+      for (var y = Math.floor(y0); y <= Math.floor(y1); y += 1)
+        for (var x = Math.floor(x0); x <= Math.floor(x1); x += 1) mark(wrap(x, W), wrap(y, H));
+    }
+    if (marks) marks.forEach(function (v, k) { mark(Math.floor(k / 8192), k % 8192); });
+    if (boost) boost.forEach(function (v, k) { mark(Math.floor(k / 8192), k % 8192); });
+    if (cursor) {
+      var r = WAVE_R * Math.min(1.4, Math.max(0.6, CELL / BASE)) / CELL + 2;
+      var cx = camCX + cursor.x / CELL, cy = camCY + cursor.y / CELL;
+      markRect(cx - r, cy - r, cx + r, cy + r);
+    }
+    if (sel) markRect(camCX + sel.x0 / CELL - 1, camCY + sel.y0 / CELL - 1, camCX + sel.x1 / CELL + 1, camCY + sel.y1 / CELL + 1);
+
+    var ready = new Uint8Array(KW * KH), builds = 0, checks = 0;
+    var ux0 = Math.floor((Math.floor(camCX) - 1) / CH), uy0 = Math.floor((Math.floor(camCY) - 1) / CH);
+    var ux1 = Math.floor((camCX + vw / CELL + 2) / CH), uy1 = Math.floor((camCY + vh / CELL + 2) / CH);
+    var vis = [];
+    for (var uy = uy0; uy <= uy1; uy++) for (var ux = ux0; ux <= ux1; ux++) {
+      var kx = wrap(ux, KW), ky = wrap(uy, KH), ci = ky * KW + kx;
+      vis.push(ci);
+      if (dyn[ci]) continue;
+      var ch = chunks.get(ci);
+      if (ch) { chunks.delete(ci); chunks.set(ci, ch); }        // недавно показанные — в конец очереди
+      else if (builds < 10) { ch = buildChunk(kx, ky, sc); chunks.set(ci, ch); builds++; }
+      if (ch) ready[ci] = 1;
+    }
+    // понемногу сверять куски с картой: пара десятков за кадр
+    for (var q = 0; q < vis.length && checks < 20; q++) {
+      var cj = vis[(chunkRR + q) % vis.length], chk = chunks.get(cj);
+      if (!chk) continue;
+      checks++;
+      if (chk.sig !== chunkSig(cj % KW, (cj / KW) | 0, sc)) { chunks.delete(cj); ready[cj] = 0; }
+    }
+    chunkRR = (chunkRR + checks) % Math.max(1, vis.length);
+    var nr = 0; for (var z = 0; z < ready.length; z++) nr += ready[z];
+    lodStats = { vis: vis.length, ready: nr, builds: builds, cached: chunks.size };
+    /* Держатся все видимые куски и запас на поворот головы; выбрасываются
+       давно не показанные. Раньше потолок был общий, меньше числа видимых
+       кусков большого экрана, и кэш выбрасывал как раз видимые — каждый кадр
+       десяток кусков строился заново. */
+    var keep = vis.length + 80;
+    if (chunks.size > keep + 40) {
+      var it = chunks.keys();
+      while (chunks.size > keep) chunks.delete(it.next().value);
+    }
+    chunkReady = ready;
+  }
+
+  function drawChunks(ctx, vw, vh) {
+    if (!chunkReady) return;
+    var KW = W / CH, KH = H / CH;
+    var a = fadeAll * (1 - conDim) * (dimOthers > 0 ? 1 - dimOthers : 1);
+    if (a <= 0.01) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = Math.min(1, a);
+    var ux0 = Math.floor((Math.floor(camCX) - 1) / CH), uy0 = Math.floor((Math.floor(camCY) - 1) / CH);
+    var ux1 = Math.floor((camCX + vw / CELL + 2) / CH), uy1 = Math.floor((camCY + vh / CELL + 2) / CH);
+    var size = (CH + CPAD * 2) * CELL;
+    for (var uy = uy0; uy <= uy1; uy++) for (var ux = ux0; ux <= ux1; ux++) {
+      var ci = wrap(uy, KH) * KW + wrap(ux, KW);
+      if (!chunkReady[ci]) continue;
+      var ch = chunks.get(ci);
+      if (!ch) continue;
+      ctx.drawImage(ch.cv, (ux * CH - CPAD - camCX) * CELL, (uy * CH - CPAD - camCY) * CELL, size, size);
+    }
+    ctx.restore();
+  }
+
   function draw(ctx, vw, vh, cursor) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     baseT = ctx.getTransform();
     var box = atlas.box * (CELL / BASE);
     var lit = 0, seen = 0;
+    prepChunks(vw, vh, cursor);
+    skipCr = chunkReady; skipKW = W / CH;
     each(vw, vh, cursor, function (gx, gy, wx, wy, key, id, px, py, s, f, dim, inSel, bo, anc, vs, rot, mk, sp, gl, pu, sh) {
       if (px < -CELL * 2 || py < -CELL * 2 || px > vw + CELL * 2 || py > vh + CELL * 2) return;
       seen++;
@@ -1129,9 +1307,11 @@
       blit(ctx, id, px, py, ss, 1, a, box, rot);
       if (a > 0.72 || f > 0.5) blit(ctx, id, px, py, ss, 1, Math.min(0.85, (a - 0.5) * 1.1 + f * 0.5), box, rot);
     });
+    skipCr = null;
     hot = seen ? Math.min(1, lit / 14) : 0;
     baseT = null;
     ctx.restore();
+    drawChunks(ctx, vw, vh);
     drawOutlines(ctx, vw, vh);
   }
 
@@ -1273,6 +1453,9 @@
     get ZMIN() { return ZMIN; },
     get ZMAX() { return ZMAX; },
     get atlas() { return atlas; },
+    // для проверок: включить или выключить куски дальнего масштаба
+    setLod: function (on) { noLod = !on; chunks.clear(); },
+    get lodStats() { return lodStats; },
     /* Мелкое поле разметки слов в лорной записи рисует лорный модуль сам, но
        двигаться знаки в нём обязаны так же, как здесь: иначе слово выдавало бы
        себя не повадкой, а чужим ритмом. Поэтому связный шум, повадки и мера
@@ -1286,7 +1469,7 @@
     get voidCount() { return voids.size; },
     // для проверок памяти: сколько записей в каждой карте поля
     sizes: function () {
-      return { states: states.size, cells: cells.size, nodes: nodes.size, over: over.size, voids: voids.size,
+      return { states: states ? states.length : 0, cells: cells.size, nodes: nodes.size, over: over.size, voids: voids.size,
                spent: spent.size, glitch: glitch.size, purged: purged.size, shards: shards.size, outlines: outlines.length,
                sortedOf: sortedOf.size, consumed: consumed.size, spin: spin.size, shardId: shardId.size };
     },
