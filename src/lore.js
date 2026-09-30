@@ -110,6 +110,45 @@
   }
   function corners(bl) { return [0, bl.w - 1, bl.n - bl.w, bl.n - 1]; }
 
+  /* --- снимок находки ---------------------------------------------------------
+     Собирая данные о находке (не о мусоре), корабль её фотографирует: снимок
+     нужен ему для анализа и отчёта. В записи находки под него оставлено
+     квадратное место — у горизонтальной записи слева или справа, у
+     вертикальной сверху или снизу. Журнал корабля, мусор и документация
+     снимков не имеют. ph — сторона и размер в клетках. */
+  function photoPlan(w, h, rnd) {
+    var s = Math.min(w, h), side = w >= h ? (rnd() < 0.5 ? 'l' : 'r') : (rnd() < 0.5 ? 't' : 'b');
+    return { side: side, s: s };
+  }
+  // смещение снимка от угла текста записи, в клетках
+  function photoOff(ph, w, h) {
+    if (ph.side === 'l') return { x: -ph.s, y: 0 };
+    if (ph.side === 'r') return { x: w, y: 0 };
+    if (ph.side === 't') return { x: 0, y: -ph.s };
+    return { x: 0, y: h };
+  }
+  // рамка записи вместе со снимком, в клетках от угла текста
+  function footprint(ph, w, h) {
+    if (!ph) return { x: 0, y: 0, w: w, h: h };
+    var o = photoOff(ph, w, h);
+    return { x: Math.min(0, o.x), y: Math.min(0, o.y),
+             w: ph.side === 'l' || ph.side === 'r' ? w + ph.s : w,
+             h: ph.side === 't' || ph.side === 'b' ? h + ph.s : h };
+  }
+  function photoOf(bl) { return bl.inst && bl.inst.ph ? bl.inst.ph : null; }
+  function photoRect(bl) {
+    var ph = photoOf(bl);
+    if (!ph) return null;
+    var o = photoOff(ph, bl.w, bl.h), g = F.cellOrigin((bl.ox + o.x + F.W) % F.W, (bl.oy + o.y + F.H) % F.H), c = F.CELL;
+    return { x0: g.x, y0: g.y, x1: g.x + ph.s * c, y1: g.y + ph.s * c };
+  }
+  // запись целиком: текст и снимок
+  function outerRect(bl) {
+    var r = rectOf(bl), q = photoRect(bl);
+    if (!q) return r;
+    return { x0: Math.min(r.x0, q.x0), y0: Math.min(r.y0, q.y0), x1: Math.max(r.x1, q.x1), y1: Math.max(r.y1, q.y1) };
+  }
+
   function setCell(bl, k, g) { bl.cells[k] = g; F.setOverride(cellKey(bl, k), g); }
 
   function fillerGid(wx, wy) {
@@ -223,6 +262,31 @@
              w: inst.w || 8, h: inst.h || 3, sentences: tx.sentences, extra: [] };
   }
 
+  /* Находки из старых сохранений снимка не имели. Место под него ищется с
+     обеих сторон; если оба заняты соседями — запись остаётся без снимка. */
+  function fitOldPhoto(inst) {
+    if (inst.ph !== undefined || !inst.at) return;
+    var id = 'obj:' + inst.uid, w = inst.w || 8, h = inst.h || 3;
+    var sides = w >= h ? ['r', 'l'] : ['b', 't'];
+    inst.ph = null;
+    for (var i = 0; i < sides.length; i++) {
+      var ph = { side: sides[i], s: Math.min(w, h) }, o = photoOff(ph, w, h);
+      var x = inst.at[0] + o.x, y = inst.at[1] + o.y, s2 = ph.s;
+      var free = Object.keys(layout).every(function (k) {
+        if (k === id) return true;
+        var e = layout[k];
+        return x >= e.x + e.w + 2 || x + s2 + 2 <= e.x || y >= e.y + e.h + 2 || y + s2 + 2 <= e.y;
+      });
+      if (free) {
+        inst.ph = ph;
+        var fp = footprint(ph, w, h);
+        layout[id] = { x: inst.at[0] + fp.x, y: inst.at[1] + fp.y, w: fp.w, h: fp.h };
+        dirty = true;
+        return;
+      }
+    }
+  }
+
   function syncObjBlocks() {
     objInst.forEach(function (inst) {
       if (blocks.some(function (b) { return b.inst === inst; })) return;
@@ -230,6 +294,7 @@
         var pr = placeFor('obj:' + inst.uid, inst.w || 8, inst.h || 3);
         inst.at = [pr.x, pr.y]; inst.w = pr.w; inst.h = pr.h;
       }
+      fitOldPhoto(inst);
       makeBlock(objDef(inst), blocks.length, { inst: inst, onum: inst.onum || 0, sec: inst.sec || 0 });
     });
   }
@@ -249,9 +314,11 @@
     if (!free.length) return false;
     var tx = free[Math.floor(Math.random() * free.length)];
     var sz = OBJ_SIZES[Math.floor(Math.random() * OBJ_SIZES.length)], uid = objUid++;
-    var pr = placeFor('obj:' + uid, sz[0], sz[1]);
+    var ph = photoPlan(sz[0], sz[1], Math.random), fp = footprint(ph, sz[0], sz[1]);
+    // место занимает запись вместе со снимком, иначе соседи легли бы на снимок
+    var pr = placeFor('obj:' + uid, fp.w, fp.h);
     objInst.push({ uid: uid, type: o.type, text: tx.id, onum: o.onum || 0, sec: sector,
-                   at: [pr.x, pr.y], w: sz[0], h: sz[1] });
+                   at: [pr.x - fp.x, pr.y - fp.y], w: sz[0], h: sz[1], ph: ph });
     stats.objects++;
     flare[0] = 1;
     dirty = true;
@@ -396,8 +463,9 @@
      и меню сбоку поместились на экране. */
   function focus(bl, z) {
     var v = env.view();
-    var fit = Math.min((v.w - 520) / (bl.w * 54), (v.h - 300) / (bl.h * 54));
-    F.glideTo(bl.ox + bl.w / 2, bl.oy + bl.h / 2);
+    var fp = footprint(photoOf(bl), bl.w, bl.h);
+    var fit = Math.min((v.w - 520) / (fp.w * 54), (v.h - 300) / (fp.h * 54));
+    F.glideTo(bl.ox + fp.x + fp.w / 2, bl.oy + fp.y + fp.h / 2);
     F.easeZoom(Math.max(0.6, Math.min(z || 1.7, fit)));
   }
 
@@ -1603,7 +1671,7 @@
   function hitBtn(x, y) { return btn.live && Math.hypot(x - btn.x, y - btn.y) < btn.r + 12; }
 
   function menuRect() {
-    var r = rectOf(ses.bl), v = env.view(), w = ses.stage === 1 ? 210 : 170, h = Math.min(ses.stage === 1 ? 400 : 360, v.h - 250);
+    var r = outerRect(ses.bl), v = env.view(), w = ses.stage === 1 ? 210 : 170, h = Math.min(ses.stage === 1 ? 400 : 360, v.h - 250);
     var x = r.x1 + 40;
     if (x + w > v.w - 12) x = r.x0 - 40 - w;
     var y = clamp((r.y0 + r.y1) / 2 - h / 2, 96, v.h - 140 - h);
@@ -1810,13 +1878,13 @@
       }
     }
     if (s.stage === 1) {
-      show = coverage() === bl.n; rect = rectOf(bl);
+      show = coverage() === bl.n; rect = outerRect(bl);
       // пока фигуру ведут над рамкой, ячейка уже чуть поддаётся
       var hover = s.drag && cellAt(bl, s.drag.x, s.drag.y) >= 0 ? 0.12 : 0;
       var want = (s.placed.length + hover) / 3;
       s.usedAnim += (want - s.usedAnim) * Math.min(1, dt * 5);
     }
-    if (s.stage === 2) { show = s.rem.every(function (k) { return !!s.slots[k]; }); rect = rectOf(bl); }
+    if (s.stage === 2) { show = s.rem.every(function (k) { return !!s.slots[k]; }); rect = outerRect(bl); }
     if (s.stage === 3) {
       // скорость курсора нужна уклоняющемуся: он отпрыгивает от быстрого хода
       if (P) {
@@ -1855,7 +1923,7 @@
       if (s.ring && now - s.ring.t > RING_T) s.ring = null;
       stepFine(s, dt);
       show = !s.sweep && s.words.length > 0 && s.words.every(function (w) { return w.done; });
-      rect = rectOf(bl);
+      rect = outerRect(bl);
     }
     if (s.stage === 4) {
       if (s.miss && now - s.miss.t > 0.6) s.miss = null;
@@ -1887,6 +1955,15 @@
           // под дочитанной записью знаков больше нет: в рамке живёт только текст
           if (bl.stage >= 5) m.hide = 1;
           marks.set(F.ckey(wx, wy), m);
+        }
+        // под снимком знаков поля нет: там лежит сам снимок
+        var ph = photoOf(bl);
+        if (ph) {
+          var po = photoOff(ph, bl.w, bl.h);
+          for (var py = 0; py < ph.s; py++) for (var px = 0; px < ph.s; px++) {
+            var sx = (bl.ox + po.x + px + F.W) % F.W, sy = (bl.oy + po.y + py + F.H) % F.H;
+            marks.set(F.ckey(sx, sy), { id: 1, still: 1, hide: 1 });
+          }
         }
       }
       // у заготовки записи объекта символы границы рисуются отдельно, цветом
@@ -2021,12 +2098,78 @@
   }
   // запись видна на экране (с запасом)
   function onScreen(bl) {
-    var r = rectOf(bl), v = env.view(), m = F.CELL * 2;
+    var r = outerRect(bl), v = env.view(), m = F.CELL * 2;
     return r.x1 > -m && r.y1 > -m && r.x0 < v.w + m && r.y0 < v.h + m;
   }
 
+  /* Снимки лежат файлами: у каждого вида находки свой набор (photos в
+     LoreText.objects), и находке достаётся один из них по её номеру.
+     Пока файла нет — пустой кадр: чёрное поле с зерном и уголками. */
+  var photoCache = {};
+  function photoImg(bl) {
+    var od = bl.inst && T.objects[bl.inst.type];
+    if (!od || !od.photos || !od.photos.length) return null;
+    var src = od.photos[bl.inst.uid % od.photos.length];
+    var im = photoCache[src];
+    if (!im) {
+      im = photoCache[src] = new Image();
+      im.src = src;
+    }
+    return im.complete && im.naturalWidth ? im : null;
+  }
+
+  function drawPhoto(ctx, bl, prog) {
+    var q = photoRect(bl);
+    if (!q || prog <= 0) return;
+    var w = q.x1 - q.x0, h = q.y1 - q.y0, pad = Math.max(3, F.CELL * 0.1);
+    var x0 = q.x0 + pad, y0 = q.y0 + pad, iw = w - pad * 2, ih = h - pad * 2;
+    ctx.save();
+    ctx.globalAlpha = clamp(prog, 0, 1);
+    ctx.fillStyle = 'rgb(4,3,2)';
+    ctx.fillRect(q.x0, q.y0, w, h);
+    ctx.beginPath(); ctx.rect(x0, y0, iw, ih); ctx.clip();
+    var im = photoImg(bl);
+    if (im) {
+      // снимок кадрируется по центру: у корабля кадр квадратный
+      var sc = Math.max(iw / im.naturalWidth, ih / im.naturalHeight);
+      var dw = im.naturalWidth * sc, dh = im.naturalHeight * sc;
+      ctx.drawImage(im, x0 + (iw - dw) / 2, y0 + (ih - dh) / 2, dw, dh);
+    }
+    // живое зерно и строчная развёртка поверх: снимок — сигнал, а не картинка
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'rgba(255,150,60,0.16)';
+    var n = Math.floor(iw * ih / 900);
+    for (var i = 0; i < n; i++) ctx.fillRect(x0 + Math.random() * iw, y0 + Math.random() * ih, 1.5, 1.5);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    for (var yy = y0; yy < y0 + ih; yy += 3) ctx.fillRect(x0, yy, iw, 1);
+    ctx.restore();
+    // уголки кадра
+    ctx.save();
+    ctx.globalAlpha = clamp(prog, 0, 1) * 0.8;
+    ctx.strokeStyle = 'rgba(255,170,90,0.8)';
+    ctx.lineWidth = 1.2;
+    var k = Math.min(iw, ih) * 0.12;
+    ctx.beginPath();
+    [[x0, y0, 1, 1], [x0 + iw, y0, -1, 1], [x0, y0 + ih, 1, -1], [x0 + iw, y0 + ih, -1, -1]].forEach(function (c) {
+      ctx.moveTo(c[0] + c[2] * k, c[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(c[0], c[1] + c[3] * k);
+    });
+    ctx.stroke();
+    // граница между снимком и текстом записи
+    var r = rectOf(bl), ph = photoOf(bl);
+    ctx.strokeStyle = objColor(bl, 0.45);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    if (ph.side === 'l') { ctx.moveTo(r.x0, r.y0); ctx.lineTo(r.x0, r.y1); }
+    else if (ph.side === 'r') { ctx.moveTo(r.x1, r.y0); ctx.lineTo(r.x1, r.y1); }
+    else if (ph.side === 't') { ctx.moveTo(r.x0, r.y0); ctx.lineTo(r.x1, r.y0); }
+    else { ctx.moveTo(r.x0, r.y1); ctx.lineTo(r.x1, r.y1); }
+    ctx.stroke();
+    ctx.restore();
+  }
+
   function drawFrame(ctx, bl, prog) {
-    var r = rectOf(bl), w = r.x1 - r.x0, h = r.y1 - r.y0, L = 2 * (w + h) * clamp(prog, 0, 1);
+    var r = outerRect(bl), w = r.x1 - r.x0, h = r.y1 - r.y0, L = 2 * (w + h) * clamp(prog, 0, 1);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     glowStroke(ctx, bl.inst ? objColor(bl, 0.95) : 'rgba(236,244,255,0.95)', 16, 3.4);
@@ -2511,15 +2654,18 @@
       if (bl.stage === 0 && (bl.inst || bl === nb)) drawObjSeed(ctx, bl, choosing);
       if (choosing && bl.stage >= 1) {
         // запись, которую можно выбрать: вокруг неё пульсирует рамка
-        var cr = rectOf(bl), cp = 0.5 + 0.5 * Math.sin(now * 5);
+        var cr = outerRect(bl), cp = 0.5 + 0.5 * Math.sin(now * 5);
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
         glowStroke(ctx, bl.inst ? objColor(bl, (0.3 + 0.5 * cp).toFixed(3)) : 'rgba(255,200,130,' + (0.3 + 0.5 * cp).toFixed(3) + ')', 12, 2);
         ctx.strokeRect(cr.x0 - 6, cr.y0 - 6, cr.x1 - cr.x0 + 12, cr.y1 - cr.y0 + 12);
         ctx.restore();
       }
-      if (bl.stage >= 1) drawFrame(ctx, bl, 1);
-      else if (active && ses.stage === 0 && ses.forming >= 0) drawFrame(ctx, bl, ses.forming / 1.4);
+      if (bl.stage >= 1) { drawPhoto(ctx, bl, 1); drawFrame(ctx, bl, 1); }
+      else if (active && ses.stage === 0 && ses.forming >= 0) {
+        drawPhoto(ctx, bl, clamp(ses.forming / 1.4, 0, 1));
+        drawFrame(ctx, bl, ses.forming / 1.4);
+      }
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       /* Ничего из сделанного не пропадает. Фигуры, уложенные на первом этапе,
@@ -2963,6 +3109,16 @@
         var ws = wordsOf(bl), out = [];
         for (var i = 1; i < ws.length; i++) out.push(linkTokens(bl, ws[i - 1], ws[i]).join(' '));
         return out;
+      },
+      // все записи находок: номер, вид, этап, снимок
+      objs: function () {
+        return blocks.filter(function (b) { return b.inst; }).map(function (b) {
+          return { id: b.id, type: b.inst.type, w: b.w, h: b.h, ox: b.ox, oy: b.oy, stage: b.stage, ph: b.inst.ph };
+        });
+      },
+      objStage: function (stage) {
+        blocks.forEach(function (b) { if (b.inst) { b.stage = stage; b.num = creatureNo; } });
+        dirty = true;
       },
       force: function (li, stage) {
         var i = li || 0, bl = materializeBase(i), k;
