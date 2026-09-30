@@ -340,13 +340,13 @@
      существа в капсуле, '#sector' — сектор, где объект подобран. */
   function S3(a, b, c) { return { sentences: [a, b, c] }; }
   var objects = {
-    capsule: { cls: 'art', special: true, repeat: true, rows: ['.xxxxx.', 'xxxxxxx', '.xxxxx.'], texts: [
+    capsule: { cls: 'art', photos: ['assets/photos/capsule_1.webp', 'assets/photos/capsule_2.webp', 'assets/photos/capsule_3.webp'], special: true, repeat: true, rows: ['.xxxxx.', 'xxxxxxx', '.xxxxx.'], texts: [
       { id: 'capsule', sentences: [
         { text: ['КАПСУЛА', '⟨с⟩', 'СУЩЕСТВО', '#objnum'], key: ['КАП', 'СУ', 'ЛА'] },
         { text: ['ДРЕЙФ', '⟨в⟩', 'СЕКТОР', '#sector', '⟨как-назначено⟩'], key: ['ДРЕЙФ'] },
         { text: ['ПОДБОР', '⟨не-предусмотрен⟩'], key: null }] }] },
 
-    asteroid: { cls: 'nat', weight: 3, photos: ['assets/photos/asteroid_close.webp', 'assets/photos/asteroid_far.webp'], rows: ['.xxx.', 'xxxxx', 'xxxx.', '.xx..'], texts: [
+    asteroid: { cls: 'nat', photos: ['assets/photos/asteroid_close.webp', 'assets/photos/asteroid_far.webp', 'assets/photos/asteroid_3.webp'], weight: 3, rows: ['.xxx.', 'xxxxx', 'xxxx.', '.xx..'], texts: [
       Object.assign({ id: 'ast1' }, S3(
         { text: ['АСТЕРОИД', '⟨класс⟩', 'КАМЕНЬ'], key: ['КА', 'МЕНЬ'] },
         { text: ['СОСТАВ', '⟨не-представляет-интереса⟩'], key: ['СОС', 'ТАВ'] },
@@ -360,7 +360,7 @@
         { text: ['ЛЁД', '⟨на-поверхности⟩', '⟨в-следах⟩'], key: ['ЛЁД'] },
         { text: ['ОТМЕТКА', '⟨внесена-в⟩', 'КАРТА'], key: null }))] },
 
-    asteroid_big: { cls: 'nat', weight: 1.4, photos: ['assets/photos/asteroid_close.webp', 'assets/photos/asteroid_far.webp'], rows: ['..xxx..', '.xxxxx.', 'xxxxxxx', 'xxxxxx.', '.xx.x..'], texts: [
+    asteroid_big: { cls: 'nat', photos: ['assets/photos/asteroid_big_3.webp', 'assets/photos/asteroid_close.webp', 'assets/photos/asteroid_far.webp'], weight: 1.4, rows: ['..xxx..', '.xxxxx.', 'xxxxxxx', 'xxxxxx.', '.xx.x..'], texts: [
       Object.assign({ id: 'astb1' }, S3(
         { text: ['ГЛЫБА', '⟨пересекает⟩', 'СЕКТОР', '#sector'], key: ['ГЛЫ', 'БА'] },
         { text: ['СТОЛКНОВЕНИЕ', '⟨не-ожидается⟩'], key: ['СТОЛК', 'НО', 'ВЕНИЕ'] },
@@ -370,7 +370,7 @@
         { text: ['ДОБЫЧА', '⟨не-назначена⟩'], key: ['ДО', 'БЫ', 'ЧА'] },
         { text: ['КООРДИНАТЫ', '⟨сохранены⟩'], key: null }))] },
 
-    moon_shard: { cls: 'nat', weight: 1, rows: ['.xxxx.', 'xxxxxx', 'xxxxxx', 'xxxxxx', '.xxxx.'], texts: [
+    moon_shard: { cls: 'nat', photos: ['assets/photos/moon_shard_1.webp', 'assets/photos/moon_shard_2.webp', 'assets/photos/moon_shard_3.webp'], weight: 1, rows: ['.xxxx.', 'xxxxxx', 'xxxxxx', 'xxxxxx', '.xxxx.'], texts: [
       Object.assign({ id: 'moon1' }, S3(
         { text: ['ОСКОЛОК', '⟨принадлежал⟩', 'ЛУНА'], key: ['ОС', 'КО', 'ЛОК'] },
         { text: ['ПОВЕРХНОСТЬ', '⟨покрыта⟩', 'ПЫЛЬ'], key: ['ПЫЛЬ'] },
@@ -380,49 +380,49 @@
         { text: ['ОРБИТА', '⟨устойчива⟩'], key: ['ОР', 'БИ', 'ТА'] },
         { text: ['ПОСАДКА', '⟨не-требуется⟩'], key: null }))] },
 
-    comet: { cls: 'nat', weight: 1, rows: ['....xxx', '..xxxxx', 'xxx.xx.'], texts: [
+    comet: { cls: 'nat', photos: ['assets/photos/comet_1.webp', 'assets/photos/comet_2.webp', 'assets/photos/comet_3.webp'], weight: 1, rows: ['....xxx', '..xxxxx', 'xxx.xx.'], texts: [
       Object.assign({ id: 'comet1' }, S3(
         { text: ['КОМЕТА', '⟨оставляет⟩', 'ХВОСТ'], key: ['КО', 'МЕ', 'ТА'] },
         { text: ['ЛЁД', '⟨испаряется-как-назначено⟩'], key: ['ЛЁД'] },
         { text: ['ОПАСНОСТЬ', '⟨нет⟩'], key: null }))] },
 
-    dead_star: { cls: 'nat', weight: 0.6, rows: ['..x..', '.xxx.', 'xxxxx', '.xxx.', '..x..'], texts: [
+    dead_star: { cls: 'nat', photos: ['assets/photos/dead_star_1.webp', 'assets/photos/dead_star_2.webp', 'assets/photos/dead_star_3.webp'], weight: 0.6, rows: ['..x..', '.xxx.', 'xxxxx', '.xxx.', '..x..'], texts: [
       Object.assign({ id: 'star1' }, S3(
         { text: ['ЗВЕЗДА', '⟨погасла-давно⟩'], key: ['ЗВЕЗ', 'ДА'] },
         { text: ['ИЗЛУЧЕНИЕ', '⟨в-пределах-нормы⟩'], key: ['ИЗ', 'ЛУ', 'ЧЕНИЕ'] },
         { text: ['СЕКТОР', '#sector', '⟨без-изменений⟩'], key: null }))] },
 
-    relay: { cls: 'art', weight: 1, rows: ['...x...', '.xxxxx.', 'xxx.xxx', '.xxxxx.', '...x...'], texts: [
+    relay: { cls: 'art', photos: ['assets/photos/relay_1.webp', 'assets/photos/relay_2.webp', 'assets/photos/relay_3.webp'], weight: 1, rows: ['...x...', '.xxxxx.', 'xxx.xxx', '.xxxxx.', '...x...'], texts: [
       Object.assign({ id: 'relay1' }, S3(
         { text: ['РЕТРАНСЛЯТОР', '⟨передаёт-по⟩', 'РАСПИСАНИЕ'], key: ['РЕ', 'ТРАНС', 'ЛЯТОР'] },
         { text: ['СИГНАЛ', '⟨устойчив⟩'], key: ['СИГ', 'НАЛ'] },
         { text: ['ОБСЛУЖИВАНИЕ', '⟨не-требуется⟩'], key: null }))] },
 
-    mining: { cls: 'art', weight: 0.8, rows: ['xx....xx', 'xxxxxxxx', 'xxxxxxxx', 'x.x..x.x'], texts: [
+    mining: { cls: 'art', photos: ['assets/photos/mining_1.webp', 'assets/photos/mining_2.webp', 'assets/photos/mining_3.webp'], weight: 0.8, rows: ['xx....xx', 'xxxxxxxx', 'xxxxxxxx', 'x.x..x.x'], texts: [
       Object.assign({ id: 'mine1' }, S3(
         { text: ['ПЛАТФОРМА', '⟨добывает-как-назначено⟩', 'РУДА'], key: ['РУ', 'ДА'] },
         { text: ['ГРУЗ', '⟨ожидает⟩', 'ВЫВОЗ'], key: ['ГРУЗ'] },
         { text: ['СВЯЗЬ', '⟨штатная⟩'], key: null }))] },
 
-    shuttle: { cls: 'art', weight: 0.8, rows: ['x.....', 'xxxxx.', 'xxxxxx', 'x.....'], texts: [
+    shuttle: { cls: 'art', photos: ['assets/photos/shuttle_1.webp', 'assets/photos/shuttle_2.webp', 'assets/photos/shuttle_3.webp'], weight: 0.8, rows: ['x.....', 'xxxxx.', 'xxxxxx', 'x.....'], texts: [
       Object.assign({ id: 'shuttle1' }, S3(
         { text: ['ЧЕЛНОК', '⟨следует-по⟩', 'МАРШРУТ'], key: ['ЧЕЛ', 'НОК'] },
         { text: ['ЭКИПАЖ', '⟨на-месте⟩'], key: ['Э', 'КИ', 'ПАЖ'] },
         { text: ['ПОМОЩЬ', '⟨не-запрошена⟩'], key: null }))] },
 
-    shuttle_broken: { cls: 'art', weight: 0.7, rows: ['x..x..', 'xx.xxx', 'x..x..'], texts: [
+    shuttle_broken: { cls: 'art', photos: ['assets/photos/shuttle_broken_1.webp', 'assets/photos/shuttle_broken_2.webp', 'assets/photos/shuttle_broken_3.webp'], weight: 0.7, rows: ['x..x..', 'xx.xxx', 'x..x..'], texts: [
       Object.assign({ id: 'wreck1' }, S3(
         { text: ['ЧЕЛНОК', '⟨без-хода⟩'], key: ['ЧЕЛ', 'НОК'] },
         { text: ['КОРПУС', '⟨повреждён⟩', 'ОБЛОМКИ'], key: ['КОР', 'ПУС'] },
         { text: ['ЭКИПАЖ', '⟨эвакуирован-по⟩', 'ПРОТОКОЛ'], key: null }))] },
 
-    sarcophagus: { cls: 'art', weight: 0.5, rows: ['.x.', 'xxx', 'xxx', 'xxx', 'xxx', '.x.'], texts: [
+    sarcophagus: { cls: 'art', photos: ['assets/photos/sarcophagus_1.webp', 'assets/photos/sarcophagus_2.webp', 'assets/photos/sarcophagus_3.webp'], weight: 0.5, rows: ['.x.', 'xxx', 'xxx', 'xxx', 'xxx', '.x.'], texts: [
       Object.assign({ id: 'sarc1' }, S3(
         { text: ['САРКОФАГ', '⟨запечатан⟩'], key: ['САР', 'КО', 'ФАГ'] },
         { text: ['СОДЕРЖИМОЕ', '⟨не-вскрывать-по⟩', 'ПРОТОКОЛ'], key: ['ПРО', 'ТО', 'КОЛ'] },
         { text: ['ДРЕЙФ', '⟨продолжается⟩'], key: null }))] },
 
-    probe: { cls: 'art', weight: 0.8, rows: ['xx.x.xx', 'xxxxxxx', 'xx.x.xx'], texts: [
+    probe: { cls: 'art', photos: ['assets/photos/probe_1.webp', 'assets/photos/probe_2.webp', 'assets/photos/probe_3.webp'], weight: 0.8, rows: ['xx.x.xx', 'xxxxxxx', 'xx.x.xx'], texts: [
       Object.assign({ id: 'probe1' }, S3(
         { text: ['ЗОНД', '⟨собирает-как-назначено⟩', 'ДАННЫЕ'], key: ['ЗОНД'] },
         { text: ['ПИТАНИЕ', '⟨на-исходе⟩'], key: ['ПИ', 'ТА', 'НИЕ'] },
@@ -430,7 +430,7 @@
 
     /* Единственная странная находка: заброшенная станция. Встречается один раз,
        на четвёртом цикле, когда игрок уже немного читает журнал. */
-    station_strange: { cls: 'art', special: true, rows: [
+    station_strange: { cls: 'art', photos: ['assets/photos/station_strange_1.webp', 'assets/photos/station_strange_2.webp', 'assets/photos/station_strange_3.webp'], special: true, rows: [
       '...x.....', '.xxxxx.x.', 'xxx.xxxxx', 'xx...x.xx', '.xxx.xxx.', '....x....'], texts: [
       { id: 'strange1', sentences: [
         { text: ['СТАНЦИЯ', '⟨не-отвечает-на⟩', 'ЗАПРОС'], key: ['СТАН', 'ЦИ', 'Я'] },

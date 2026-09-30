@@ -318,7 +318,9 @@
     // место занимает запись вместе со снимком, иначе соседи легли бы на снимок
     var pr = placeFor('obj:' + uid, fp.w, fp.h);
     objInst.push({ uid: uid, type: o.type, text: tx.id, onum: o.onum || 0, sec: sector,
-                   at: [pr.x - fp.x, pr.y - fp.y], w: sz[0], h: sz[1], ph: ph });
+                   at: [pr.x - fp.x, pr.y - fp.y], w: sz[0], h: sz[1], ph: ph,
+                   // какой из снимков вида достался находке — выбирается раз и навсегда
+                   pi: Math.floor(Math.random() * 1e6) });
     stats.objects++;
     flare[0] = 1;
     dirty = true;
@@ -2111,13 +2113,15 @@
   }
 
   /* Снимки лежат файлами: у каждого вида находки свой набор (photos в
-     LoreText.objects), и находке достаётся один из них по её номеру.
+     LoreText.objects), и находке достаётся случайный из них — выбранный при
+     подборе и сохранённый вместе с находкой (старые находки — по номеру).
      Пока файла нет — пустой кадр: чёрное поле с зерном и уголками. */
   var photoCache = {};
   function photoImg(bl) {
     var od = bl.inst && T.objects[bl.inst.type];
     if (!od || !od.photos || !od.photos.length) return null;
-    var src = od.photos[bl.inst.uid % od.photos.length];
+    var pick = bl.inst.pi !== undefined ? bl.inst.pi : bl.inst.uid;
+    var src = od.photos[pick % od.photos.length];
     var im = photoCache[src];
     if (!im) {
       im = photoCache[src] = new Image();
