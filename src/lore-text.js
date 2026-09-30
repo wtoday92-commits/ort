@@ -346,7 +346,7 @@
         { text: ['ДРЕЙФ', '⟨в⟩', 'СЕКТОР', '#sector', '⟨как-назначено⟩'], key: ['ДРЕЙФ'] },
         { text: ['ПОДБОР', '⟨не-предусмотрен⟩'], key: null }] }] },
 
-    asteroid: { cls: 'nat', weight: 3, rows: ['.xxx.', 'xxxxx', 'xxxx.', '.xx..'], texts: [
+    asteroid: { cls: 'nat', weight: 3, photos: ['assets/photos/asteroid_close.webp', 'assets/photos/asteroid_far.webp'], rows: ['.xxx.', 'xxxxx', 'xxxx.', '.xx..'], texts: [
       Object.assign({ id: 'ast1' }, S3(
         { text: ['АСТЕРОИД', '⟨класс⟩', 'КАМЕНЬ'], key: ['КА', 'МЕНЬ'] },
         { text: ['СОСТАВ', '⟨не-представляет-интереса⟩'], key: ['СОС', 'ТАВ'] },
@@ -360,7 +360,7 @@
         { text: ['ЛЁД', '⟨на-поверхности⟩', '⟨в-следах⟩'], key: ['ЛЁД'] },
         { text: ['ОТМЕТКА', '⟨внесена-в⟩', 'КАРТА'], key: null }))] },
 
-    asteroid_big: { cls: 'nat', weight: 1.4, rows: ['..xxx..', '.xxxxx.', 'xxxxxxx', 'xxxxxx.', '.xx.x..'], texts: [
+    asteroid_big: { cls: 'nat', weight: 1.4, photos: ['assets/photos/asteroid_close.webp', 'assets/photos/asteroid_far.webp'], rows: ['..xxx..', '.xxxxx.', 'xxxxxxx', 'xxxxxx.', '.xx.x..'], texts: [
       Object.assign({ id: 'astb1' }, S3(
         { text: ['ГЛЫБА', '⟨пересекает⟩', 'СЕКТОР', '#sector'], key: ['ГЛЫ', 'БА'] },
         { text: ['СТОЛКНОВЕНИЕ', '⟨не-ожидается⟩'], key: ['СТОЛК', 'НО', 'ВЕНИЕ'] },
