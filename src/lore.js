@@ -2362,11 +2362,26 @@
       l.t0 = t0; l.t1 = t1;
       var grow = l.born < 0 ? 1 : clamp((now - l.born) / LINE_T, 0, 1);
       var te = t0 + (t1 - t0) * grow;
-      glowStroke(ctx, 'rgba(255,150,50,0.85)', 8, Math.max(1.4, F.CELL * 0.04));
+      /* Яркая сплошная линия — это отношение: у неё есть ⟨текст⟩, наведи и
+         прочтёшь. Между узлами без отношения (переход через точку в следующее
+         предложение, или «СУЩЕСТВО №9» — одно имя из двух узлов) текста нет
+         вовсе, и такая линия — тонкий тусклый пунктир. Иначе она выглядела
+         связью, у которой потерялась подпись. */
+      var bare = !linkTokens(bl, chain[l.a], chain[l.b]).length;
+      if (bare) {
+        ctx.save();
+        ctx.shadowBlur = 0;
+        ctx.setLineDash([Math.max(2, F.CELL * 0.03), Math.max(5, F.CELL * 0.08)]);
+        ctx.strokeStyle = 'rgba(255,170,90,0.4)';
+        ctx.lineWidth = Math.max(1, F.CELL * 0.018);
+      } else {
+        glowStroke(ctx, 'rgba(255,150,50,0.85)', 8, Math.max(1.4, F.CELL * 0.04));
+      }
       ctx.beginPath();
       ctx.moveTo(ax + dx * t0, ay + dy * t0);
       ctx.lineTo(ax + dx * te, ay + dy * te);
       ctx.stroke();
+      if (bare) ctx.restore();
     });
     ctx.restore();
 
