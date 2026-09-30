@@ -1498,11 +1498,16 @@
      которое он вскрывает. Куда мысль идёт дальше, узел показывает креном — тем
      же, каким узел цепочки на анализе подаётся в сторону следующего. */
 
+  /* Шрифт графа записи. Полужирный: тонкий моноширинный через постобработку
+     с аберрацией и зерном расплывался и читался плохо. */
+  var GFONT = 'Consolas, "Courier New", monospace', GFONT_W = '600';
+  function gfont(fs) { return GFONT_W + ' ' + fs.toFixed(1) + 'px ' + GFONT; }
+
   var w100 = {};
   function widthAt(tok, fs) {
     if (w100[tok] === undefined) {
       if (!measure) measure = document.createElement('canvas').getContext('2d');
-      measure.font = '100px Consolas, "Courier New", monospace';
+      measure.font = GFONT_W + ' 100px ' + GFONT;
       w100[tok] = measure.measureText(tok).width;
     }
     return w100[tok] * fs / 100;
@@ -1540,21 +1545,13 @@
     return out;
   }
 
-  /* Размер текста узла: он должен лечь в свои клетки. */
-  function nodeFont(bl, w, text) {
-    var b = wordBox(bl, w), fit = (b.x1 - b.x0) * 0.84, fs = Math.min((b.y1 - b.y0) * 0.5, F.CELL * 0.52);
-    var wd = widthAt(text, fs);
-    if (wd > fit) fs *= fit / wd;
-    return Math.max(3, fs);
-  }
-
   function spendVoid() {
     if (!INV().spendVoid(BY_ORDER)) { reject(0.5); env.shake(0.3); return false; }
     return true;
   }
 
   var LINE_T = 0.45;                     // линия тянется от узла к узлу, а не появляется разом
-  var LINK_SHOW = 5.5;                   // сколько текст связи виден сам по себе
+  var LINK_SHOW = 3.2;                   // сколько текст свежей связи виден сам по себе
 
   function startLines(bl) {
     if (file[3] < 1) { reject(); flare[3] = 1; return; }
@@ -2237,11 +2234,6 @@
     return -1;
   }
 
-  /* Пересекается ли прямоугольник плашки с прямоугольником слова узла. */
-  function overlaps(m, q) {
-    return !!m && q.x0 < m.x1 + 3 && q.x1 > m.x0 - 3 && q.y0 < m.y1 + 2 && q.y1 > m.y0 - 2;
-  }
-
   function distToSeg(px, py, x0, y0, x1, y1) {
     var dx = x1 - x0, dy = y1 - y0, l2 = dx * dx + dy * dy;
     var tt = l2 > 0 ? clamp(((px - x0) * dx + (py - y0) * dy) / l2, 0, 1) : 0;
@@ -2266,12 +2258,16 @@
   }
 
   /* Где и каким кеглем стоит слово узла. Нужно и при отрисовке, и чтобы
-     плашка связи не легла поверх самого слова. */
+     линии и плашки связей обходили само слово.
+
+     Слово занимает не больше трёх четвертей своих клеток: при прежних девяти
+     десятых соседние слова сходились вплотную и читались одним словом. */
+  var NODE_FIT = 0.74, NODE_PAD = 0.28;
   function nodeMetrics(bl, w) {
     var b = wordBox(bl, w), parts = nodeParts(bl, w);
     if (!parts.length) return null;
-    var fit = (b.x1 - b.x0) * 0.88;
-    var fs = Math.min((b.y1 - b.y0) * 0.5, F.CELL * 0.5), total = 0, i;
+    var fit = (b.x1 - b.x0) * NODE_FIT;
+    var fs = Math.min((b.y1 - b.y0) * 0.42, F.CELL * 0.42), total = 0, i;
     for (i = 0; i < 6; i++) {
       total = 0;
       parts.forEach(function (p) { total += p.k === 'text' ? widthAt(p.v, fs) : p.u * fs; });
@@ -2279,23 +2275,26 @@
       if (total <= fit || fs < 4) break;
       fs *= Math.max(0.55, fit / total);
     }
+    var pad = fs * NODE_PAD;
     return { b: b, parts: parts, fs: fs, total: total,
-             x0: b.cx - total / 2, x1: b.cx + total / 2, y0: b.cy - fs * 0.8, y1: b.cy + fs * 0.8 };
+             x0: b.cx - total / 2 - pad, x1: b.cx + total / 2 + pad,
+             y0: b.cy - fs * 0.72 - pad * 0.5, y1: b.cy + fs * 0.72 + pad * 0.5 };
   }
 
-  function drawNode(ctx, bl, w, col, alpha, rise) {
-    var m = nodeMetrics(bl, w);
+  function drawNode(ctx, m, col, alpha, rise) {
     if (!m) return;
     var b = m.b, parts = m.parts, fs = m.fs, total = m.total;
-    /* Подложки под словом нет нарочно: знаки вскрытого узла и так убраны, а
-       плашка закрывала бы фигуры первого этапа и круги второго — то самое, что
-       должно остаться видным под прочитанной записью. */
     var x = b.cx - total / 2, y = b.cy + rise;
     ctx.save();
     ctx.globalAlpha = alpha;
+    ctx.shadowBlur = 0;
+    /* Подложка ровно под словом, а не под всеми его клетками: она прячет
+       линии, проходящие насквозь, но оставляет видными фигуры и круги. */
+    ctx.fillStyle = 'rgba(8,6,3,0.9)';
+    ctx.fillRect(m.x0, m.y0 + rise, m.x1 - m.x0, m.y1 - m.y0);
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
-    ctx.font = fs.toFixed(1) + 'px Consolas, "Courier New", monospace';
+    ctx.font = gfont(fs);
     parts.forEach(function (p) {
       if (p.k === 'text') {
         ctx.fillStyle = col;
@@ -2321,6 +2320,14 @@
     ctx.restore();
   }
 
+  /* Где луч из середины прямоугольника выходит за его край (доля пути). */
+  function exitT(x, y, dx, dy, m) {
+    var t = 1;
+    if (dx > 0) t = Math.min(t, (m.x1 - x) / dx); else if (dx < 0) t = Math.min(t, (m.x0 - x) / dx);
+    if (dy > 0) t = Math.min(t, (m.y1 - y) / dy); else if (dy < 0) t = Math.min(t, (m.y0 - y) / dy);
+    return Math.max(0, t);
+  }
+
   /* Запись как граф прямо на своих клетках. Узлы стоят там, где игрок их
      разметил на третьем этапе; связи — линии между ними, и ⟨текст⟩ связи
      проступает, пока её тянут, и потом всякий раз, когда курсор рядом.
@@ -2331,73 +2338,118 @@
   function drawRecordGraph(ctx, bl, s) {
     var chain = wordsOf(bl);
     if (!chain.length) return;
-    var upto = s ? s.at : chain.length - 1;
+    var upto = Math.min(s ? s.at : chain.length - 1, chain.length - 1);
     var r = rectOf(bl), P = env.pointer;
-    var col = bl.inst ? objColor(bl, '1') : 'rgba(244,240,228,1)';
-    var links = [], i;
-    for (i = 1; i <= upto && i < chain.length; i++) links.push({ a: i - 1, b: i, born: linkBorn(s, i) });
+    var col = bl.inst ? objColor(bl, '1') : 'rgba(250,247,240,1)';
+    var links = [], i, ms = [];
+    for (i = 0; i <= upto; i++) ms.push(nodeMetrics(bl, chain[i]));
+    for (i = 1; i <= upto; i++) links.push({ a: i - 1, b: i, born: linkBorn(s, i) });
 
     ctx.save();
     ctx.beginPath(); ctx.rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); ctx.clip();
 
+    /* Линия идёт от КРАЯ слова к краю слова, а не от середины к середине:
+       раньше она зачёркивала сами слова, и читать их было нельзя. */
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.lineCap = 'round';
     links.forEach(function (l) {
-      var A = wordBox(bl, chain[l.a]), B = wordBox(bl, chain[l.b]);
+      var A = ms[l.a], B = ms[l.b];
+      if (!A || !B) return;
+      var ax = A.b.cx, ay = A.b.cy, dx = B.b.cx - ax, dy = B.b.cy - ay;
+      var t0 = exitT(ax, ay, dx, dy, A), t1 = 1 - exitT(B.b.cx, B.b.cy, -dx, -dy, B);
+      if (t1 <= t0) return;
+      l.t0 = t0; l.t1 = t1;
       var grow = l.born < 0 ? 1 : clamp((now - l.born) / LINE_T, 0, 1);
-      glowStroke(ctx, 'rgba(255,150,50,0.9)', 10, Math.max(1.6, F.CELL * 0.055));
+      var te = t0 + (t1 - t0) * grow;
+      glowStroke(ctx, 'rgba(255,150,50,0.85)', 8, Math.max(1.4, F.CELL * 0.04));
       ctx.beginPath();
-      ctx.moveTo(A.cx, A.cy);
-      ctx.lineTo(A.cx + (B.cx - A.cx) * grow, A.cy + (B.cy - A.cy) * grow);
+      ctx.moveTo(ax + dx * t0, ay + dy * t0);
+      ctx.lineTo(ax + dx * te, ay + dy * te);
       ctx.stroke();
     });
     ctx.restore();
 
-    for (i = 0; i <= upto && i < chain.length; i++) {
+    // слова — поверх линий: наискосок линия проходит под словом, а не по нему
+    for (i = 0; i <= upto; i++) {
       var born = i === 0 ? (s ? s.t0 : -1) : linkBorn(s, i);
       var up = born < 0 ? 1 : clamp((now - born) / 0.7, 0, 1);
       if (up <= 0.01) continue;
       // узел не подменяется текстом рывком: слово всплывает на место знаков
-      drawNode(ctx, bl, chain[i], col, up, (1 - up) * F.CELL * 0.3);
+      drawNode(ctx, ms[i], col, up, (1 - up) * F.CELL * 0.3);
+    }
+
+    /* Плашки связей. Одновременно видно не больше двух: самая свежая связь и
+       та, к которой подведён курсор. Все разом не помещаются — подстрочник
+       длинный, и плашки налезали друг на друга и на слова.
+
+       Место под плашку ищется по наименьшему перекрытию: середина линии, а
+       потом граница клеток над и под ней с шагом вбок. Слово закрывать
+       дороже, чем чужую плашку. */
+    var freshI = -1, freshA = 0, nearI = -1, nearD = 1e9;
+    links.forEach(function (l, li) {
+      if (l.t0 === undefined || !linkTokens(bl, chain[l.a], chain[l.b]).length) return;
+      var A = ms[l.a], B = ms[l.b], ax = A.b.cx, ay = A.b.cy, dx = B.b.cx - ax, dy = B.b.cy - ay;
+      var age = l.born < 0 ? 1e9 : now - l.born;
+      var fr = age < LINK_SHOW ? clamp((age - LINE_T) / 0.3, 0, 1) * clamp((LINK_SHOW - age) / 0.8, 0, 1) : 0;
+      if (fr > 0 && (freshI < 0 || l.born > links[freshI].born)) { freshI = li; freshA = fr; }
+      if (P) {
+        var d = distToSeg(P.x, P.y, ax + dx * l.t0, ay + dy * l.t0, ax + dx * l.t1, ay + dy * l.t1);
+        if (d < nearD) { nearD = d; nearI = li; }
+      }
+    });
+    var nearA = nearI >= 0 ? clamp(1.4 - nearD / (F.CELL * 0.6), 0, 1) : 0;
+    var show = [];
+    if (freshI >= 0) show.push({ li: freshI, a: freshA });
+    if (nearI >= 0 && nearA > 0.03) {
+      if (nearI === freshI) show[0].a = Math.max(show[0].a, nearA);
+      else show.push({ li: nearI, a: nearA });
     }
 
     ctx.save();
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
-    links.forEach(function (l) {
-      var toks = linkTokens(bl, chain[l.a], chain[l.b]);
-      if (!toks.length) return;
-      var A = wordBox(bl, chain[l.a]), B = wordBox(bl, chain[l.b]);
-      var mx = (A.cx + B.cx) / 2, my = (A.cy + B.cy) / 2;
-      var age = l.born < 0 ? 1e9 : now - l.born;
-      var fresh = age < LINK_SHOW ? clamp((age - LINE_T) / 0.4, 0, 1) * clamp((LINK_SHOW - age) / 1, 0, 1) : 0;
-      var near = P ? clamp(1.35 - distToSeg(P.x, P.y, A.cx, A.cy, B.cx, B.cy) / (F.CELL * 0.85), 0, 1) : 0;
-      var a = Math.max(fresh, near);
-      if (a < 0.03) return;
-      var txt = toks.join(' '), fs = Math.max(4, F.CELL * 0.25);
-      var wd = widthAt(txt, fs), lim = (r.x1 - r.x0) * 0.94;
+    ctx.shadowBlur = 0;
+    var placed = [];
+    function overlapArea(q, m) {
+      var w = Math.min(q.x1, m.x1) - Math.max(q.x0, m.x0), h = Math.min(q.y1, m.y1) - Math.max(q.y0, m.y0);
+      return w > 0 && h > 0 ? w * h : 0;
+    }
+    show.forEach(function (sh) {
+      var l = links[sh.li], A = ms[l.a], B = ms[l.b];
+      var ax = A.b.cx, ay = A.b.cy, dx = B.b.cx - ax, dy = B.b.cy - ay;
+      var txt = linkTokens(bl, chain[l.a], chain[l.b]).join(' '), fs = Math.max(9, F.CELL * 0.27);
+      var wd = widthAt(txt, fs), lim = (r.x1 - r.x0) * 0.9;
       if (wd > lim) { fs *= lim / wd; wd = lim; }
-      /* Плашка связи ДЛИННАЯ, и мерить надо её саму, а не середину линии:
-         иначе она ложится на соседнее слово краем. Не поместилась на своём
-         месте — сходит на границу клеток, где ни одно слово не написано. */
-      var mA = nodeMetrics(bl, chain[l.a]), mB = nodeMetrics(bl, chain[l.b]);
-      function free(yy) {
-        var q = { x0: mx - wd / 2 - 4, x1: mx + wd / 2 + 4, y0: yy - fs * 0.85, y1: yy + fs * 0.85 };
-        return !overlaps(mA, q) && !overlaps(mB, q);
+      var hw = wd / 2 + fs * 0.45, hh = fs * 0.8;
+      var tm = (l.t0 + l.t1) / 2, mx = ax + dx * tm, my = ay + dy * tm;
+      var rowT = Math.floor((my - r.y0) / F.CELL) * F.CELL + r.y0, rowB = rowT + F.CELL;
+      var cands = [[mx, my]], step = Math.max(hw * 0.5, F.CELL * 0.5);
+      for (var o = 0; o <= 6; o++) {
+        [1, -1].forEach(function (sg) {
+          if (!o && sg < 0) return;
+          cands.push([mx + sg * o * step, rowT], [mx + sg * o * step, rowB]);
+        });
       }
-      if (!free(my)) {
-        var up = my - F.CELL * 0.48, dn = my + F.CELL * 0.48;
-        if (free(up) && up > r.y0 + F.CELL * 0.15) my = up;
-        else if (free(dn) && dn < r.y1 - F.CELL * 0.15) my = dn;
-        else my = up > r.y0 + F.CELL * 0.15 ? up : dn;
-      }
-      ctx.globalAlpha = a;
-      ctx.fillStyle = 'rgba(8,6,3,0.92)';
-      ctx.fillRect(mx - wd / 2 - 4, my - fs * 0.85, wd + 8, fs * 1.7);
-      ctx.font = fs.toFixed(1) + 'px Consolas, "Courier New", monospace';
-      ctx.fillStyle = 'rgba(255,170,90,0.95)';
-      ctx.fillText(txt, mx, my);
+      var best = null, bestScore = 1e18;
+      cands.forEach(function (cd, ci) {
+        var cx = clamp(cd[0], r.x0 + hw + 2, r.x1 - hw - 2), cy = clamp(cd[1], r.y0 + hh + 1, r.y1 - hh - 1);
+        var q = { x0: cx - hw, x1: cx + hw, y0: cy - hh, y1: cy + hh }, sc = ci * 0.5;
+        for (var k = 0; k < ms.length; k++) if (ms[k]) sc += overlapArea(q, ms[k]) * 3;
+        for (k = 0; k < placed.length; k++) sc += overlapArea(q, placed[k]) * 2;
+        if (sc < bestScore) { bestScore = sc; best = q; }
+      });
+      placed.push(best);
+      var px = (best.x0 + best.x1) / 2, py = (best.y0 + best.y1) / 2;
+      ctx.globalAlpha = sh.a;
+      ctx.fillStyle = 'rgba(10,7,3,0.96)';
+      ctx.fillRect(best.x0, best.y0, best.x1 - best.x0, best.y1 - best.y0);
+      ctx.strokeStyle = 'rgba(255,170,90,0.55)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(best.x0 + 0.5, best.y0 + 0.5, best.x1 - best.x0 - 1, best.y1 - best.y0 - 1);
+      ctx.font = gfont(fs);
+      ctx.fillStyle = 'rgba(255,205,150,1)';
+      ctx.fillText(txt, px, py);
     });
     ctx.restore();
     ctx.restore();
@@ -2414,7 +2466,6 @@
     G.drawGlyph(ctx, F.VOID_GID, F.CELL * 0.42, 1.2);
     ctx.restore();
   }
-
 
   function draw(ctx, t) {
     if (!env || !env.active()) return;
