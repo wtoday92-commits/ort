@@ -2379,32 +2379,40 @@
       drawNode(ctx, ms[i], col, up, (1 - up) * F.CELL * 0.3);
     }
 
-    /* Плашки связей. Одновременно видно не больше двух: самая свежая связь и
-       та, к которой подведён курсор. Все разом не помещаются — подстрочник
-       длинный, и плашки налезали друг на друга и на слова.
-
-       Место под плашку ищется по наименьшему перекрытию: середина линии, а
-       потом граница клеток над и под ней с шагом вбок. Слово закрывать
-       дороже, чем чужую плашку. */
-    var freshI = -1, freshA = 0, nearI = -1, nearD = 1e9;
+    /* Плашки связей. Под курсором — одна связь, и она не отдаётся соседней,
+       пока та не станет заметно ближе: в середине записи курсор почти равно
+       близок к двум линиям, и «ближайшая» переключалась каждый кадр — плашки
+       мигали и прыгали. Без курсора видна только самая свежая связь.
+       Плашки проявляются и гаснут плавно, а место, найденное для плашки,
+       держится, пока она видна: иначе она перескакивала вслед за соседней. */
+    var hs = bl._hov || (bl._hov = { cur: -1, a: {}, pl: {}, t: now });
+    var hdt = clamp(now - hs.t, 0, 0.1);
+    hs.t = now;
+    var dist = {}, freshI = -1, freshA = 0;
     links.forEach(function (l, li) {
       if (l.t0 === undefined || !linkTokens(bl, chain[l.a], chain[l.b]).length) return;
       var A = ms[l.a], B = ms[l.b], ax = A.b.cx, ay = A.b.cy, dx = B.b.cx - ax, dy = B.b.cy - ay;
       var age = l.born < 0 ? 1e9 : now - l.born;
       var fr = age < LINK_SHOW ? clamp((age - LINE_T) / 0.3, 0, 1) * clamp((LINK_SHOW - age) / 0.8, 0, 1) : 0;
       if (fr > 0 && (freshI < 0 || l.born > links[freshI].born)) { freshI = li; freshA = fr; }
-      if (P) {
-        var d = distToSeg(P.x, P.y, ax + dx * l.t0, ay + dy * l.t0, ax + dx * l.t1, ay + dy * l.t1);
-        if (d < nearD) { nearD = d; nearI = li; }
-      }
+      if (P) dist[li] = distToSeg(P.x, P.y, ax + dx * l.t0, ay + dy * l.t0, ax + dx * l.t1, ay + dy * l.t1);
     });
-    var nearA = nearI >= 0 ? clamp(1.4 - nearD / (F.CELL * 0.6), 0, 1) : 0;
-    var show = [];
-    if (freshI >= 0) show.push({ li: freshI, a: freshA });
-    if (nearI >= 0 && nearA > 0.03) {
-      if (nearI === freshI) show[0].a = Math.max(show[0].a, nearA);
-      else show.push({ li: nearI, a: nearA });
-    }
+    var ENTER = F.CELL * 0.55, LEAVE = F.CELL * 0.85, SWITCH = F.CELL * 0.3;
+    var best = -1, bestD = 1e9;
+    Object.keys(dist).forEach(function (k) { if (dist[k] < bestD) { bestD = dist[k]; best = +k; } });
+    if (hs.cur >= 0 && (dist[hs.cur] === undefined || dist[hs.cur] > LEAVE)) hs.cur = -1;
+    if (hs.cur < 0) { if (best >= 0 && bestD < ENTER) hs.cur = best; }
+    else if (best >= 0 && best !== hs.cur && bestD < dist[hs.cur] - SWITCH) hs.cur = best;
+
+    var want = {};
+    if (hs.cur >= 0) want[hs.cur] = 1;
+    else if (freshI >= 0) want[freshI] = freshA;
+    links.forEach(function (l, li) {
+      var cur = hs.a[li] || 0, tg = want[li] || 0;
+      cur += (tg - cur) * Math.min(1, hdt * (tg > cur ? 10 : 6));
+      if (cur < 0.01 && !tg) { delete hs.a[li]; delete hs.pl[li]; }
+      else hs.a[li] = cur;
+    });
 
     ctx.save();
     ctx.textBaseline = 'middle';
@@ -2415,38 +2423,48 @@
       var w = Math.min(q.x1, m.x1) - Math.max(q.x0, m.x0), h = Math.min(q.y1, m.y1) - Math.max(q.y0, m.y0);
       return w > 0 && h > 0 ? w * h : 0;
     }
-    show.forEach(function (sh) {
-      var l = links[sh.li], A = ms[l.a], B = ms[l.b];
+    Object.keys(hs.a).forEach(function (key) {
+      var li = +key, l = links[li], al = hs.a[li];
+      if (!l || l.t0 === undefined) return;
+      var A = ms[l.a], B = ms[l.b];
       var ax = A.b.cx, ay = A.b.cy, dx = B.b.cx - ax, dy = B.b.cy - ay;
       var txt = linkTokens(bl, chain[l.a], chain[l.b]).join(' '), fs = Math.max(9, F.CELL * 0.27);
       var wd = widthAt(txt, fs), lim = (r.x1 - r.x0) * 0.9;
       if (wd > lim) { fs *= lim / wd; wd = lim; }
-      var hw = wd / 2 + fs * 0.45, hh = fs * 0.8;
-      var tm = (l.t0 + l.t1) / 2, mx = ax + dx * tm, my = ay + dy * tm;
-      var rowT = Math.floor((my - r.y0) / F.CELL) * F.CELL + r.y0, rowB = rowT + F.CELL;
-      var cands = [[mx, my]], step = Math.max(hw * 0.5, F.CELL * 0.5);
-      for (var o = 0; o <= 6; o++) {
-        [1, -1].forEach(function (sg) {
-          if (!o && sg < 0) return;
-          cands.push([mx + sg * o * step, rowT], [mx + sg * o * step, rowB]);
+      var hw = wd / 2 + fs * 0.45, hh = fs * 0.8, pick;
+      // место держится в долях клетки от угла записи: едет и растёт вместе с картой
+      var kept = hs.pl[li];
+      if (kept) {
+        var kx = r.x0 + kept.x * F.CELL, ky = r.y0 + kept.y * F.CELL;
+        pick = { x0: kx - hw, x1: kx + hw, y0: ky - hh, y1: ky + hh };
+      } else {
+        var tm = (l.t0 + l.t1) / 2, mx = ax + dx * tm, my = ay + dy * tm;
+        var rowT = Math.floor((my - r.y0) / F.CELL) * F.CELL + r.y0, rowB = rowT + F.CELL;
+        var cands = [[mx, my]], step = Math.max(hw * 0.5, F.CELL * 0.5);
+        for (var o = 0; o <= 6; o++) {
+          [1, -1].forEach(function (sg) {
+            if (!o && sg < 0) return;
+            cands.push([mx + sg * o * step, rowT], [mx + sg * o * step, rowB]);
+          });
+        }
+        var bestS = 1e18;
+        cands.forEach(function (cd, ci) {
+          var cx = clamp(cd[0], r.x0 + hw + 2, r.x1 - hw - 2), cy = clamp(cd[1], r.y0 + hh + 1, r.y1 - hh - 1);
+          var q = { x0: cx - hw, x1: cx + hw, y0: cy - hh, y1: cy + hh }, sc = ci * 0.5;
+          for (var k = 0; k < ms.length; k++) if (ms[k]) sc += overlapArea(q, ms[k]) * 3;
+          for (k = 0; k < placed.length; k++) sc += overlapArea(q, placed[k]) * 2;
+          if (sc < bestS) { bestS = sc; pick = q; }
         });
+        hs.pl[li] = { x: ((pick.x0 + pick.x1) / 2 - r.x0) / F.CELL, y: ((pick.y0 + pick.y1) / 2 - r.y0) / F.CELL };
       }
-      var best = null, bestScore = 1e18;
-      cands.forEach(function (cd, ci) {
-        var cx = clamp(cd[0], r.x0 + hw + 2, r.x1 - hw - 2), cy = clamp(cd[1], r.y0 + hh + 1, r.y1 - hh - 1);
-        var q = { x0: cx - hw, x1: cx + hw, y0: cy - hh, y1: cy + hh }, sc = ci * 0.5;
-        for (var k = 0; k < ms.length; k++) if (ms[k]) sc += overlapArea(q, ms[k]) * 3;
-        for (k = 0; k < placed.length; k++) sc += overlapArea(q, placed[k]) * 2;
-        if (sc < bestScore) { bestScore = sc; best = q; }
-      });
-      placed.push(best);
-      var px = (best.x0 + best.x1) / 2, py = (best.y0 + best.y1) / 2;
-      ctx.globalAlpha = sh.a;
+      placed.push(pick);
+      var px = (pick.x0 + pick.x1) / 2, py = (pick.y0 + pick.y1) / 2;
+      ctx.globalAlpha = al;
       ctx.fillStyle = 'rgba(10,7,3,0.96)';
-      ctx.fillRect(best.x0, best.y0, best.x1 - best.x0, best.y1 - best.y0);
+      ctx.fillRect(pick.x0, pick.y0, pick.x1 - pick.x0, pick.y1 - pick.y0);
       ctx.strokeStyle = 'rgba(255,170,90,0.55)';
       ctx.lineWidth = 1;
-      ctx.strokeRect(best.x0 + 0.5, best.y0 + 0.5, best.x1 - best.x0 - 1, best.y1 - best.y0 - 1);
+      ctx.strokeRect(pick.x0 + 0.5, pick.y0 + 0.5, pick.x1 - pick.x0 - 1, pick.y1 - pick.y0 - 1);
       ctx.font = gfont(fs);
       ctx.fillStyle = 'rgba(255,205,150,1)';
       ctx.fillText(txt, px, py);
