@@ -1722,6 +1722,12 @@
   }
 
   function press(x, y) {
+    // раскрытый снимок закрывается нажатием куда угодно
+    if (pz.bl && pz.want) { closePhoto(); return; }
+    if (!journal.open) {
+      var pb = photoHit(x, y);
+      if (pb) { openPhoto(pb); return; }
+    }
     if (journal.open) {
       var sel = null, hitJ = null;
       journal.hits.forEach(function (h) {
@@ -1841,6 +1847,7 @@
   }
 
   function wheel(dy, x, y) {
+    if (pz.bl && pz.want) return true;
     if (journal.open) {
       journal.scroll = Math.max(0, Math.min(journal.max, journal.scroll + dy * 0.6));
       return true;
@@ -2040,6 +2047,7 @@
   }
 
   function step(dt) {
+    stepPhoto(dt);
     now += dt;
     for (var i = 0; i < 4; i++) if (flare[i] > 0) flare[i] = Math.max(0, flare[i] - dt * 1.6);
     journal.k += ((journal.open ? 1 : 0) - journal.k) * Math.min(1, dt * 7);
@@ -2118,13 +2126,13 @@
     return im.complete && im.naturalWidth ? im : null;
   }
 
-  function drawPhoto(ctx, bl, prog) {
-    var q = photoRect(bl);
-    if (!q || prog <= 0) return;
-    var w = q.x1 - q.x0, h = q.y1 - q.y0, pad = Math.max(3, F.CELL * 0.1);
+  /* Сам кадр снимка в прямоугольнике q. big — раскрытый крупно: зерно мельче
+     и гуще, рамка ярче. */
+  function drawSnap(ctx, bl, q, alpha, big) {
+    var w = q.x1 - q.x0, h = q.y1 - q.y0, pad = Math.max(3, Math.min(w, h) * 0.035);
     var x0 = q.x0 + pad, y0 = q.y0 + pad, iw = w - pad * 2, ih = h - pad * 2;
     ctx.save();
-    ctx.globalAlpha = clamp(prog, 0, 1);
+    ctx.globalAlpha = clamp(alpha, 0, 1);
     ctx.fillStyle = 'rgb(4,3,2)';
     ctx.fillRect(q.x0, q.y0, w, h);
     ctx.beginPath(); ctx.rect(x0, y0, iw, ih); ctx.clip();
@@ -2137,26 +2145,40 @@
     }
     // живое зерно и строчная развёртка поверх: снимок — сигнал, а не картинка
     ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = 'rgba(255,150,60,0.16)';
-    var n = Math.floor(iw * ih / 900);
-    for (var i = 0; i < n; i++) ctx.fillRect(x0 + Math.random() * iw, y0 + Math.random() * ih, 1.5, 1.5);
+    ctx.fillStyle = 'rgba(255,150,60,' + (big ? 0.2 : 0.16) + ')';
+    var n = Math.floor(iw * ih / (big ? 500 : 900)), gs = big ? 1.8 : 1.5;
+    for (var i = 0; i < n; i++) ctx.fillRect(x0 + Math.random() * iw, y0 + Math.random() * ih, gs, gs);
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = 'rgba(0,0,0,0.22)';
     for (var yy = y0; yy < y0 + ih; yy += 3) ctx.fillRect(x0, yy, iw, 1);
     ctx.restore();
     // уголки кадра
     ctx.save();
-    ctx.globalAlpha = clamp(prog, 0, 1) * 0.8;
-    ctx.strokeStyle = 'rgba(255,170,90,0.8)';
-    ctx.lineWidth = 1.2;
-    var k = Math.min(iw, ih) * 0.12;
+    ctx.globalAlpha = clamp(alpha, 0, 1) * (big ? 1 : 0.8);
+    ctx.strokeStyle = 'rgba(255,170,90,0.85)';
+    ctx.lineWidth = big ? 1.6 : 1.2;
+    var k = Math.min(iw, ih) * 0.1;
     ctx.beginPath();
     [[x0, y0, 1, 1], [x0 + iw, y0, -1, 1], [x0, y0 + ih, 1, -1], [x0 + iw, y0 + ih, -1, -1]].forEach(function (c) {
       ctx.moveTo(c[0] + c[2] * k, c[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(c[0], c[1] + c[3] * k);
     });
     ctx.stroke();
+    if (big) {
+      ctx.globalCompositeOperation = 'lighter';
+      glowStroke(ctx, objColor(bl, 0.9), 14, 2.2);
+      ctx.strokeRect(q.x0, q.y0, w, h);
+    }
+    ctx.restore();
+  }
+
+  function drawPhoto(ctx, bl, prog) {
+    var q = photoRect(bl);
+    if (!q || prog <= 0) return;
+    drawSnap(ctx, bl, q, prog, false);
     // граница между снимком и текстом записи
     var r = rectOf(bl), ph = photoOf(bl);
+    ctx.save();
+    ctx.globalAlpha = clamp(prog, 0, 1) * 0.8;
     ctx.strokeStyle = objColor(bl, 0.45);
     ctx.lineWidth = 1.4;
     ctx.beginPath();
@@ -2166,6 +2188,66 @@
     else { ctx.moveTo(r.x0, r.y1); ctx.lineTo(r.x1, r.y1); }
     ctx.stroke();
     ctx.restore();
+  }
+
+  /* --- снимок крупно -----------------------------------------------------------
+     Нажатие на снимок плавно увеличивает его примерно вдвое прямо над
+     записью, а всё остальное на экране размывается и темнеет. В маленьком
+     квадрате детали снимка пропадают: полосы помех, горячие пиксели, смаз.
+     Нажатие куда угодно снимок закрывает. */
+  var pz = { bl: null, k: 0, want: 0 }, pzSmall = null;
+  function photoHit(x, y) {
+    for (var i = blocks.length - 1; i >= 0; i--) {
+      var bl = blocks[i];
+      if (bl.stage < 1 || !photoOf(bl)) continue;
+      var q = photoRect(bl);
+      if (x >= q.x0 && x <= q.x1 && y >= q.y0 && y <= q.y1) return bl;
+    }
+    return null;
+  }
+  function openPhoto(bl) { pz.bl = bl; pz.want = 1; S.zoom(1); }
+  function closePhoto() { if (pz.bl && pz.want) { pz.want = 0; S.zoom(-1); } }
+  function stepPhoto(dt) {
+    if (!pz.bl) return;
+    pz.k += (pz.want - pz.k) * Math.min(1, dt * (pz.want ? 6 : 8));
+    if (!pz.want && pz.k < 0.01) { pz.bl = null; pz.k = 0; }
+  }
+  // куда встаёт крупный снимок: вдвое больше, над своим местом, но не за
+  // краем экрана и не под панелями
+  function photoBig(bl) {
+    var q = photoRect(bl), v = env.view(), side = q.x1 - q.x0;
+    var S2 = Math.min(side * 2, v.h - 260, v.w * 0.6);
+    var cx = clamp((q.x0 + q.x1) / 2, S2 / 2 + 24, v.w - S2 / 2 - 24);
+    var cy = clamp((q.y0 + q.y1) / 2, S2 / 2 + 96, v.h - S2 / 2 - 150);
+    return { x0: cx - S2 / 2, y0: cy - S2 / 2, x1: cx + S2 / 2, y1: cy + S2 / 2 };
+  }
+  function drawOverlay(ctx) {
+    if (!pz.bl || !env || !env.active()) return;
+    var e = pz.k * pz.k * (3 - 2 * pz.k), v = env.view();
+    // размытие всего, что уже нарисовано: уменьшить и растянуть обратно
+    var cv = ctx.canvas, W = cv.width, H = cv.height;
+    var sw = Math.max(1, Math.round(W / 6)), sh = Math.max(1, Math.round(H / 6));
+    if (!pzSmall) pzSmall = document.createElement('canvas');
+    if (pzSmall.width !== sw || pzSmall.height !== sh) { pzSmall.width = sw; pzSmall.height = sh; }
+    var sc = pzSmall.getContext('2d');
+    sc.imageSmoothingEnabled = true;
+    sc.clearRect(0, 0, sw, sh);
+    sc.drawImage(cv, 0, 0, W, H, 0, 0, sw, sh);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalAlpha = e * 0.85;
+    ctx.drawImage(pzSmall, 0, 0, sw, sh, 0, 0, W, H);
+    ctx.restore();
+    ctx.save();
+    ctx.fillStyle = 'rgba(4,3,2,' + (0.5 * e).toFixed(3) + ')';
+    ctx.fillRect(0, 0, v.w, v.h);
+    ctx.restore();
+    // сам снимок: из своего квадрата — в крупный
+    var a = photoRect(pz.bl), b = photoBig(pz.bl);
+    var q = { x0: a.x0 + (b.x0 - a.x0) * e, y0: a.y0 + (b.y0 - a.y0) * e,
+              x1: a.x1 + (b.x1 - a.x1) * e, y1: a.y1 + (b.y1 - a.y1) * e };
+    drawSnap(ctx, pz.bl, q, 1, true);
   }
 
   function drawFrame(ctx, bl, prog) {
@@ -2944,6 +3026,7 @@
   }
 
   function leave() {
+    pz.bl = null; pz.k = 0; pz.want = 0;
     abandon();
     F.setMarks(null);
     journal.open = false;
@@ -2956,7 +3039,7 @@
   root.Lore = {
     LCAP: LCAP,
     init: function (e) { env = e; },
-    enter: enter, leave: leave, step: step, draw: draw, drawJournal: drawJournal,
+    enter: enter, leave: leave, step: step, draw: draw, drawJournal: drawJournal, drawOverlay: drawOverlay,
     press: press, release: release, move: move, wheel: wheel, folderClick: folderClick,
     busy: function () { return !!ses && !ses.choose; },
     /* Ошибка навигационного анализа — стак ошибок в первую лорную папку. */

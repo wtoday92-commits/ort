@@ -2826,6 +2826,8 @@
     }
     if (panel === 1) { LORE.drawJournal(ctx, t); INV.draw(ctx, t, vw, vh); }
     if (uiOn) drawMenu();
+    // раскрытый снимок находки — поверх всего, кроме курсора
+    if (panel === 1) LORE.drawOverlay(ctx, t);
     drawReject();
     if (uiOn) drawCursor();
     ctx.restore();
