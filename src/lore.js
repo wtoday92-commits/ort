@@ -67,6 +67,9 @@
   var fx = [];
   var now = 0;
   var wordGid = {};
+  /* Слова журнала, которые игрок узнал по событию (LoreText.witness). Журнал
+     корабля пишет ими подстрочник, остальные слова остаются знаками. */
+  var known = {}, knownSeq = 0, knownFresh = {};
   var measure = null;
 
   function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -2900,7 +2903,7 @@
     if (journal.k < 0.01) return;
     var v = env.view(), dpr = Math.min(2, root.devicePixelRatio || 1);
     var selBl = journal.sel ? blockById(journal.sel) : null;
-    var key = [v.w, v.h, dpr, Math.round(journal.scroll), journal.sel, shipSeq, creatureNo, ejectedNo,
+    var key = [v.w, v.h, dpr, Math.round(journal.scroll), journal.sel, shipSeq, knownSeq, creatureNo, ejectedNo,
       blocks.filter(function (b) { return b.stage >= 5 && b.inJ; }).map(function (b) { return b.id; }).join(','),
       selBl ? haveGlyph(selBl.pin) : ''].join('|');
     if (!jCanvas) jCanvas = document.createElement('canvas');
@@ -2976,10 +2979,25 @@
       y += 26;
     });
     ctx.globalAlpha = 1;
-    // события корабля записаны словами, которых ещё никто не прочёл
+    /* События корабля записаны его словами. Слово, которое игрок узнал по
+       событию, пишется подстрочником; остальные остаются знаками. Одна и та
+       же запись со временем проступает. */
     for (var i = ship.length - 1; i >= 0 && i >= ship.length - 12; i--) {
       var x = x0 + 20;
       ship[i].words.forEach(function (w) {
+        if (known[w]) {
+          var tx = T.words[w], link = tx.charAt(0) === '⟨', tw = ctx.measureText(tx).width;
+          if (knownFresh[w]) {
+            ctx.save();
+            ctx.fillStyle = 'rgba(255,170,90,0.16)';
+            ctx.fillRect(x - 3, y - 11, tw + 6, 22);
+            ctx.restore();
+          }
+          ctx.fillStyle = link ? 'rgba(255,170,90,0.8)' : 'rgba(244,240,228,0.95)';
+          ctx.fillText(tx, x, y);
+          x += tw + 10;
+          return;
+        }
         ctx.save(); ctx.translate(x + 9, y);
         ctx.strokeStyle = 'rgba(255,158,58,0.4)';
         G.drawGlyph(ctx, wordGid[w] || 1, 16, 1.1);
@@ -3102,6 +3120,16 @@
     journalHits: function () { return journal.hits.map(function (h) { return { id: h.bl.id, x: (h.x0 + h.x1) / 2, y: (h.y0 + h.y1) / 2, px: h.px, py: h.py }; }); },
     flag: function (k, v) { if (v !== undefined) { objFlags[k] = v; dirty = true; } return !!objFlags[k]; },
     ejects: function () { return ejects; },
+    /* Игрок своими глазами видел событие: слова, которые оно показывает,
+       становятся прочитанными. */
+    witness: function (event) {
+      var ws = (T.witness || {})[event] || [], got = 0;
+      ws.forEach(function (w) { if (!known[w] && T.words[w]) { known[w] = 1; knownFresh[w] = 1; got++; } });
+      if (got) { knownSeq++; journal.fresh = 1; dirty = true; }
+      return got;
+    },
+    wordGlyph: function (w) { return wordGid[w] || 1; },
+    known: function () { return Object.keys(known); },
     ship: function (kind) {
       var w = T.ship[kind];
       if (!w) return;
@@ -3113,6 +3141,8 @@
     toggleJournal: function () {
       journal.open = !journal.open;
       journal.fresh = 0;
+      // свежеузнанные слова подсвечены до первого закрытия журнала
+      if (!journal.open) { knownFresh = {}; knownSeq++; }
       journal.sel = null;
       if (journal.open) journal.scroll = 0;
       S.tab(journal.open ? 1 : 0);
@@ -3158,7 +3188,7 @@
         if (s.stage === 4 && s.done < 0) fOut[3] = Math.min(LCAP, fOut[3] + s.spent);
       }
       return { v: 2, errs: eOut, file: fOut, creature: creatureNo, ejects: ejects, ejected: ejectedNo, lives: lives, sector: sector, ejectSector: ejectSector,
-        stats: stats, layout: layout, objs: objInst, objRead: objRead, objLost: objLost, objFlags: objFlags, objUid: objUid, ship: ship.slice(-40).map(function (s) { return s.kind; }), logs: logs };
+        stats: stats, layout: layout, objs: objInst, objRead: objRead, objLost: objLost, objFlags: objFlags, objUid: objUid, ship: ship.slice(-40).map(function (s) { return s.kind; }), known: Object.keys(known), logs: logs };
     },
     load: function (d) {
       if (!d) return;
@@ -3178,6 +3208,8 @@
         errs = clamp(d.f.reduce(function (a, b) { return a + (b | 0); }, 0), 0, LCAP);
       }
       ship = (d.ship || []).filter(function (k) { return T.ship[k]; }).map(function (k) { return { kind: k, words: T.ship[k] }; });
+      known = {};
+      (d.known || []).forEach(function (w) { if (T.words[w]) known[w] = 1; });
       dirty = false;
     },
     /* Для проверок: разложить слова записи и протащить её по этапам без игры.

@@ -1797,6 +1797,8 @@
     con.dur = kind === 'sleep' ? SLEEP_DUR : LUNCH_DUR;
     S.command(kind);
     LORE.ship(kind);
+    // существо ушло есть или спать у игрока на глазах
+    if (panel === 0 && !document.hidden && ctrl() && !tut) LORE.witness(kind);
     if (kind === 'lunch') lunchDue = Infinity; else sleepDue = Infinity;
     // кто бы ни набрал команду, существо уходит
     if (creature.st !== 'console') { creature.st = 'away'; creature.sub = 'rest'; }
@@ -1951,9 +1953,11 @@
       if (panel !== 0 || eject || tut) return;
       var why = F.fill() >= MOVE_FILL ? 'fill' : ineffDue() ? 'ineff' : null;
       if (!why) return;
-      var g;
-      do { g = 1 + Math.floor(Math.random() * (G.COUNT - 1)); } while (G.isParasite(g));
-      move = { st: 'signal', t: 0, gid: g, ring: 0, why: why };
+      /* Маяк переезда — всегда знак слова ⟨оставляет-позади⟩. Раньше знак был
+         случайным и ничего не значил; теперь тот, кто видел переезд, узнаёт
+         этот знак и в журнале корабля. */
+      var g = LORE.wordGlyph('leaves');
+      move = { st: 'signal', t: 0, gid: g, ring: 0, why: why, seen: 0 };
       F.setBeacon(g);
       LORE.ship(why === 'ineff' ? 'relocate_ineff' : 'relocate_signal');
       return;
@@ -1973,6 +1977,8 @@
       return;
     }
     if (move.st === 'signal') {
+      // сколько игрок своими глазами смотрел на маяк
+      if (panel === 0 && !document.hidden && ctrl()) move.seen += dt;
       move.ring -= dt;
       if (move.ring <= 0 && panel === 0) { S.beacon(); move.ring = 3.2; }
       var can = panel === 0 && !eject && !con && !conHold && !handover;
@@ -1999,6 +2005,8 @@
         F.loadWorld(F.freshWorld({ w: NAV_W, h: NAV_W, seed: (Math.random() * 0xffffff) | 0, zoom: F.zoom }));
         taken.clear(); reveals.clear(); guide = null;
         LORE.ship('relocate');
+        // видел маяк и сам переезд — слово прочитано
+        if (move.seen > 4 && panel === 0 && !document.hidden) LORE.witness('relocate');
         LORE.nextSector();
         if (move.why === 'ineff') {
           // следующая белая запись — о том, почему корабль ушёл

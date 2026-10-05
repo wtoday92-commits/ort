@@ -439,5 +439,17 @@
         { text: ['ЖУРНАЛ', '⟨обрывается-на-середине⟩'], key: null }] }] }
   };
 
-  root.LoreText = { words: words, blocks: blocks, logs: logs, ship: ship, commands: commands, reserved: reserved, objects: objects };
+  /* Слова, которые узнаются не головоломкой, а по совпадению: игрок своими
+     глазами видит событие, а корабль в этот момент показывает знак слова или
+     пишет о нём в журнал. Увидел — слово прочитано. Ничего не объясняется.
+     событие -> слова. */
+  var witness = {
+    // перед переездом корабль подсвечивает по всей карте знак ⟨оставляет-позади⟩
+    relocate: ['leaves'],
+    // существо уходит есть и спать у игрока на глазах
+    lunch: ['eats'],
+    sleep: ['sleep']
+  };
+
+  root.LoreText = { words: words, blocks: blocks, logs: logs, ship: ship, commands: commands, reserved: reserved, objects: objects, witness: witness };
 })(window);
